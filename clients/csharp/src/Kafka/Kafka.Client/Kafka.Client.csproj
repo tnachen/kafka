@@ -144,6 +144,7 @@
     <Compile Include="Exceptions\ConsumerTimeoutException.cs" />
     <Compile Include="Exceptions\IllegalStateException.cs" />
     <Compile Include="Exceptions\InvalidMessageSizeException.cs" />
+    <Compile Include="Exceptions\KafkaConnectionException.cs" />
     <Compile Include="Exceptions\MessageSizeTooLargeException.cs" />
     <Compile Include="Exceptions\NoSuchElementException.cs" />
     <Compile Include="Exceptions\UnknownCodecException.cs" />
