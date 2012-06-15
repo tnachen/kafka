@@ -195,12 +195,15 @@ namespace Kafka.Client.Producers.Partitioning
         /// </summary>
         private void InitializeBrokers()
         {
-            if (this.brokers != null)
+            if (this.brokers == null)
             {
-                return;
+                this.brokers = new ConcurrentDictionary<int, Broker>();
+            }
+            else
+            {
+                this.brokers.Clear();
             }
 
-            this.brokers = new ConcurrentDictionary<int, Broker>();
             IList<string> brokerIds = this.zkclient.GetChildrenParentMayNotExist(ZooKeeperClient.DefaultBrokerIdsPath);
             foreach (var brokerId in brokerIds)
             {
@@ -218,12 +221,15 @@ namespace Kafka.Client.Producers.Partitioning
         /// </summary>
         private void InitializeTopicBrokerPartitions()
         {
-            if (this.topicBrokerPartitions != null)
+            if (this.topicBrokerPartitions == null)
             {
-                return;
+                this.topicBrokerPartitions = new ConcurrentDictionary<string, SortedSet<Partition>>();
+            }
+            else
+            {
+                this.topicBrokerPartitions.Clear();
             }
 
-            this.topicBrokerPartitions = new ConcurrentDictionary<string, SortedSet<Partition>>();
             this.zkclient.MakeSurePersistentPathExists(ZooKeeperClient.DefaultBrokerTopicsPath);
             IList<string> topics = this.zkclient.GetChildrenParentMayNotExist(ZooKeeperClient.DefaultBrokerTopicsPath);
             foreach (string topic in topics)
@@ -323,12 +329,8 @@ namespace Kafka.Client.Producers.Partitioning
         /// </summary>
         private void Reset()
         {
-
-            this.topicBrokerPartitions = null;
-            this.brokers = null;
             this.InitializeBrokers();
             this.InitializeTopicBrokerPartitions();
-
         }
 
         /// <summary>
