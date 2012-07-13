@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+using Kafka.Client.Cfg;
+using Kafka.Client.Utils;
+
 namespace Kafka.Client.IntegrationTests
 {
     using System;
@@ -29,6 +32,7 @@ namespace Kafka.Client.IntegrationTests
     using Kafka.Client.Producers.Sync;
     using Kafka.Client.Requests;
     using NUnit.Framework;
+    using System.Linq;
 
     [TestFixture]
     public class ConsumerTests : IntegrationFixtureBase
@@ -156,6 +160,104 @@ namespace Kafka.Client.IntegrationTests
             }
 
             Assert.AreEqual(numberOfMessages, resultCount);
+        }
+
+        [TestCase(null)] //default MaxQueuedChunks = 10
+        [TestCase(4)]
+        [TestCase(15)]
+        public void SimpleSyncProducerSendsLotsOfMessagesAndConsumerConnectorGetsThemBackWithMaxQueuedChunksCheck(int? maxQueuedChunks)
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            consumerConfig.FetchSize = 100;
+            var consConf = this.ConsumerConfig1;
+            int numberOfMessages = 1000;
+
+            List<Message> messagesToSend = new List<Message>();
+
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    string payload1 = "kafka 1.";
+                    byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                    var msg = new Message(payloadData1);
+                    messagesToSend.Add(msg);
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() { msg });
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            if (maxQueuedChunks.HasValue)
+            {
+                consumerConfig.MaxQueuedChunks = maxQueuedChunks.Value;
+            }
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { CurrentTestTopic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+
+                Thread.Sleep(5000);
+
+                var queues =
+                    ReflectionHelper.GetInstanceField
+                        <IDictionary<Tuple<string, string>, BlockingCollection<FetchedDataChunk>>>("queues",
+                                                                                                   consumerConnector);
+                var queue = queues.First().Value;
+                
+                Assert.AreEqual(maxQueuedChunks.HasValue ? maxQueuedChunks.Value : ConsumerConfiguration.DefaultMaxQueuedChunks, queue.Count);
+            }
+        }
+
+        [Test]
+        public void SimpleSyncProducerSendsLotsOfMessagesAndConsumerConnectorGetsThemBackWithMaxQueuedChunksRefillCheck()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            consumerConfig.FetchSize = 100;
+            int numberOfMessages = 1000;
+
+            List<Message> messagesToSend = new List<Message>();
+
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    string payload1 = "kafka 1.";
+                    byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                    var msg = new Message(payloadData1);
+                    messagesToSend.Add(msg);
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() {msg});
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> {{CurrentTestTopic, 1}};
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+
+                Thread.Sleep(5000);
+
+                var queues =
+                    ReflectionHelper.GetInstanceField
+                        <IDictionary<Tuple<string, string>, BlockingCollection<FetchedDataChunk>>>("queues",
+                                                                                                   consumerConnector);
+                var queue = queues.First().Value;
+
+                Assert.AreEqual(ConsumerConfiguration.DefaultMaxQueuedChunks, queue.Count);
+
+                var sets = messages[CurrentTestTopic];
+                var firstSet = sets[0];
+                firstSet.Take(5); //this should take at least one chunk from the queue
+
+                Thread.Sleep(2000); //a new chunk should be immediately inserted into the queue
+
+                // the queue should refill to the default max amount of chunks
+                Assert.AreEqual(ConsumerConfiguration.DefaultMaxQueuedChunks, queue.Count);
+            }
         }
 
         [Test]

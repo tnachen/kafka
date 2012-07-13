@@ -281,7 +281,7 @@ namespace Kafka.Client.Consumers
                 var streamList = new List<KafkaMessageStream>();
                 foreach (string threadId in consumerThreadIdsPerTopicMap[topic])
                 {
-                    var stream = new BlockingCollection<FetchedDataChunk>(new ConcurrentQueue<FetchedDataChunk>());
+                    var stream = new BlockingCollection<FetchedDataChunk>(new ConcurrentQueue<FetchedDataChunk>(), config.MaxQueuedChunks);
                     this.queues.Add(new Tuple<string, string>(topic, threadId), stream);
                     streamList.Add(new KafkaMessageStream(stream, this.config.Timeout));
                 }

@@ -48,6 +48,8 @@ namespace Kafka.Client.Cfg
 
         public const string DefaultSection = "kafkaConsumer";
 
+        public const int DefaultMaxQueuedChunks = 10;
+
         public ConsumerConfiguration()
         {
             this.NumberOfTries = DefaultNumberOfTries;
@@ -57,6 +59,7 @@ namespace Kafka.Client.Cfg
             this.AutoCommitInterval = DefaultAutoCommitInterval;
             this.FetchSize = DefaultFetchSize;
             this.BackOffIncrement = DefaultBackOffIncrement;
+            this.MaxQueuedChunks = DefaultMaxQueuedChunks;
         }
 
         public ConsumerConfiguration(string host, int port)
@@ -78,6 +81,7 @@ namespace Kafka.Client.Cfg
             this.BackOffIncrement = config.BackOffIncrement;
             this.SocketTimeout = config.SocketTimeout;
             this.BufferSize = config.BufferSize;
+            this.MaxQueuedChunks = config.MaxQueuedChunks;
             if (config.Broker.ElementInformation.IsPresent)
             {
                 this.SetBrokerConfiguration(config.Broker);
@@ -118,6 +122,8 @@ namespace Kafka.Client.Cfg
         public int SocketTimeout { get; set; }
 
         public int BufferSize { get; set; }
+
+        public int MaxQueuedChunks { get; set; }
 
         public int MaxFetchSize
         {

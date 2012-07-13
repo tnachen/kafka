@@ -113,6 +113,15 @@ namespace Kafka.Client.Cfg
             }
         }
 
+        [ConfigurationProperty("maxQueuedChunks", IsRequired = false, DefaultValue = ConsumerConfiguration.DefaultMaxQueuedChunks)]
+        public int MaxQueuedChunks
+        {
+            get
+            {
+                return (int)this["maxQueuedChunks"];
+            }
+        }
+
         [ConfigurationProperty("zookeeper", IsRequired = false, DefaultValue = null)]
         public ZooKeeperConfigurationElement ZooKeeperServers
         {

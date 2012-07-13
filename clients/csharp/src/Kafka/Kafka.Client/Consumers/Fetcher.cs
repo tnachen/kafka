@@ -67,6 +67,10 @@ namespace Kafka.Client.Consumers
                     fetcherRunnable.Shutdown();
                 }
                 int threadsStillRunning = 0;
+                foreach (var fetcherThread in fetcherThreads)
+                {
+                    fetcherThread.Interrupt();
+                }
                 // make sure all fetcher threads stopped
                 do
                 {
