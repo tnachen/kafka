@@ -20,17 +20,24 @@ namespace Kafka.Client.Producers.Sync
     using System;
     using System.Collections.Generic;
     using System.Linq;
+    using System.Reflection;
+    using Exceptions;
     using Kafka.Client.Cfg;
     using Kafka.Client.Messages;
     using Kafka.Client.Requests;
     using Kafka.Client.Utils;
+    using log4net;
 
     /// <summary>
     /// Sends messages encapsulated in request to Kafka server synchronously
     /// </summary>
     public class SyncProducer : ISyncProducer
     {
-        private readonly KafkaConnection connection;
+        private static readonly ILog Logger = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+        private const int MAX_CONNECT_BACKOFF_MS = 60 * 1000;
+        private KafkaConnection connection;
+        private int sentOnConnection;
+        private DateTime lastConnectionTime;
 
         private volatile bool disposed;
 
@@ -49,11 +56,11 @@ namespace Kafka.Client.Producers.Sync
         {
             Guard.NotNull(config, "config");
             this.Config = config;
-            this.connection = new KafkaConnection(
-                this.Config.Host, 
-                this.Config.Port,
-                config.BufferSize,
-                config.SocketTimeout);
+
+            Logger.Debug("Instantiating Sync Producer");
+            // make time-based reconnect starting at a random time
+            var randomReconnectInterval = (new Random()).NextDouble() * config.ReconnectInterval;
+            lastConnectionTime = DateTime.Now - new TimeSpan(Convert.ToInt32(randomReconnectInterval) * TimeSpan.TicksPerMillisecond);
         }
 
         /// <summary>
@@ -88,8 +95,30 @@ namespace Kafka.Client.Producers.Sync
         /// </param>
         public void Send(ProducerRequest request)
         {
-            this.EnsuresNotDisposed();
-            this.connection.Write(request);
+            lock (this)
+            {
+                var conn = GetOrMakeConnection();
+                try
+                {
+                    conn.Write(request);
+                }
+                catch (Exception e)
+                {
+                    if (e is KafkaConnectionException)
+                    {
+                        // no way to tell if write succeeded. Disconnect and re-throw exception to let client handle retry
+                        Disconnect();
+                    }
+                    throw;
+                }
+
+                if (Config.ReconnectTimeInterval >= 0 && (DateTime.Now - lastConnectionTime).TotalMilliseconds >= Config.ReconnectTimeInterval)
+                {
+                    Disconnect();
+                    Connect();
+                    lastConnectionTime = DateTime.Now;
+                }
+            }
         }
 
         /// <summary>
@@ -108,9 +137,74 @@ namespace Kafka.Client.Producers.Sync
                 () => requests.All(
                     x => x.MessageSet.Messages.All(
                         y => y != null && y.PayloadSize <= this.Config.MaxMessageSize)));
-            this.EnsuresNotDisposed();
             var multiRequest = new MultiProducerRequest(requests);
-            this.connection.Write(multiRequest);
+            var conn = GetOrMakeConnection();
+            conn.Write(multiRequest);
+        }
+
+        private KafkaConnection GetOrMakeConnection()
+        {
+            EnsuresNotDisposed();
+            if(connection == null)
+            {
+                connection = Connect();
+            }
+            return connection;
+        }
+        
+        private KafkaConnection Connect()
+        {
+            TimeSpan connectBackoff = new TimeSpan(1 * TimeSpan.TicksPerMillisecond);
+            DateTime beginTime = DateTime.Now;
+            
+            while(connection != null && !this.disposed)
+            {
+                try
+                {
+                    connection = new KafkaConnection(Config.Host, Config.Port, Config.BufferSize, Config.SocketTimeout);
+                    Logger.Info("Connected to " + Config.Host + ":" + Config.Port + " for producing");
+                }
+                catch (Exception e)
+                {
+                    Disconnect();
+                    DateTime endTime = DateTime.Now;
+                    // Throw because the connection timeout has expired
+                    if(((endTime - beginTime) + connectBackoff).TotalMilliseconds > Config.ConnectTimeout)
+                    {
+                        Logger.Error("Producer connection to " +  Config.Host + ":" + Config.Port + " timing out after " + 
+                            Config.ConnectTimeout + " ms", e);
+                        throw;
+                    }
+                    int backoff = Convert.ToInt32(connectBackoff.TotalMilliseconds);
+                    Logger.Error("Connection attempt to " + Config.Host + ":" + Config.Port + " failed, next attempt in " + backoff + " ms", e);
+                    System.Threading.Thread.Sleep(backoff);
+                    backoff = Math.Min(10 * backoff, MAX_CONNECT_BACKOFF_MS);
+                    connectBackoff = new TimeSpan(backoff * TimeSpan.TicksPerMillisecond);
+                }
+            }
+            return connection;
+        }
+
+        /// <summary>
+        /// Disconnect from current channel, closing connection.
+        /// Side effect: channel field is set to null on successful disconnect
+        /// </summary>
+        private void Disconnect()
+        {
+            try
+            {
+                if (this.connection != null)
+                {
+                    Logger.Info("Disconnecting from " + Config.Host + ":" + Config.Port);
+                    KafkaConnection temp = connection;
+                    connection = null;
+                    temp.Dispose();
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Error("Error on disconnect: ", e);
+            }
         }
 
         /// <summary>
@@ -135,9 +229,9 @@ namespace Kafka.Client.Producers.Sync
             }
 
             this.disposed = true;
-            if (this.connection != null)
+            lock(this)
             {
-                this.connection.Dispose();
+                Disconnect();
             }
         }
 

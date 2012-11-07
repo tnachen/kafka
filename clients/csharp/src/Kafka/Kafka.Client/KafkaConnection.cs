@@ -66,6 +66,7 @@ namespace Kafka.Client
             }
             catch (Exception e)
             {
+                Dispose();
                 throw new KafkaConnectionException(e);
             }
         }
