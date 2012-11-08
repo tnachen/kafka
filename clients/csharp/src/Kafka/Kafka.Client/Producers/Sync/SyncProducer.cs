@@ -36,7 +36,6 @@ namespace Kafka.Client.Producers.Sync
         private static readonly ILog Logger = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
         private const int MAX_CONNECT_BACKOFF_MS = 60 * 1000;
         private KafkaConnection connection;
-        private int sentOnConnection;
         private DateTime lastConnectionTime;
 
         private volatile bool disposed;
@@ -55,7 +54,7 @@ namespace Kafka.Client.Producers.Sync
         public SyncProducer(SyncProducerConfiguration config)
         {
             Guard.NotNull(config, "config");
-            this.Config = config;
+            Config = config;
 
             Logger.Debug("Instantiating Sync Producer");
             // make time-based reconnect starting at a random time
@@ -82,9 +81,8 @@ namespace Kafka.Client.Producers.Sync
             Guard.AllNotNull(messages, "messages.items");
             Guard.Assert<ArgumentOutOfRangeException>(
                 () => messages.All(
-                    x => x.PayloadSize <= this.Config.MaxMessageSize));
-            this.EnsuresNotDisposed();
-            this.Send(new ProducerRequest(topic, partition, messages));
+                    x => x.PayloadSize <= Config.MaxMessageSize));
+            Send(new ProducerRequest(topic, partition, messages));
         }
 
         /// <summary>
@@ -95,6 +93,12 @@ namespace Kafka.Client.Producers.Sync
         /// </param>
         public void Send(ProducerRequest request)
         {
+            Guard.NotNull(request, "request");
+            SendRequest(request);
+        }
+
+        private void SendRequest(AbstractRequest request)
+        {
             lock (this)
             {
                 var conn = GetOrMakeConnection();
@@ -102,13 +106,9 @@ namespace Kafka.Client.Producers.Sync
                 {
                     conn.Write(request);
                 }
-                catch (Exception e)
+                catch (KafkaConnectionException)
                 {
-                    if (e is KafkaConnectionException)
-                    {
-                        // no way to tell if write succeeded. Disconnect and re-throw exception to let client handle retry
-                        Disconnect();
-                    }
+                    Disconnect();
                     throw;
                 }
 
@@ -136,28 +136,23 @@ namespace Kafka.Client.Producers.Sync
             Guard.Assert<ArgumentNullException>(
                 () => requests.All(
                     x => x.MessageSet.Messages.All(
-                        y => y != null && y.PayloadSize <= this.Config.MaxMessageSize)));
+                        y => y != null && y.PayloadSize <= Config.MaxMessageSize)));
             var multiRequest = new MultiProducerRequest(requests);
-            var conn = GetOrMakeConnection();
-            conn.Write(multiRequest);
+            SendRequest(multiRequest);
         }
 
         private KafkaConnection GetOrMakeConnection()
         {
             EnsuresNotDisposed();
-            if(connection == null)
-            {
-                connection = Connect();
-            }
-            return connection;
+            return connection ?? (connection = Connect());
         }
-        
+
         private KafkaConnection Connect()
         {
             TimeSpan connectBackoff = new TimeSpan(1 * TimeSpan.TicksPerMillisecond);
             DateTime beginTime = DateTime.Now;
-            
-            while(connection != null && !this.disposed)
+
+            while (connection == null && !disposed)
             {
                 try
                 {
@@ -169,9 +164,9 @@ namespace Kafka.Client.Producers.Sync
                     Disconnect();
                     DateTime endTime = DateTime.Now;
                     // Throw because the connection timeout has expired
-                    if(((endTime - beginTime) + connectBackoff).TotalMilliseconds > Config.ConnectTimeout)
+                    if (((endTime - beginTime) + connectBackoff).TotalMilliseconds > Config.ConnectTimeout)
                     {
-                        Logger.Error("Producer connection to " +  Config.Host + ":" + Config.Port + " timing out after " + 
+                        Logger.Error("Producer connection to " + Config.Host + ":" + Config.Port + " timing out after " +
                             Config.ConnectTimeout + " ms", e);
                         throw;
                     }
@@ -193,7 +188,7 @@ namespace Kafka.Client.Producers.Sync
         {
             try
             {
-                if (this.connection != null)
+                if (connection != null)
                 {
                     Logger.Info("Disconnecting from " + Config.Host + ":" + Config.Port);
                     KafkaConnection temp = connection;
@@ -212,7 +207,7 @@ namespace Kafka.Client.Producers.Sync
         /// </summary>
         public void Dispose()
         {
-            this.Dispose(true);
+            Dispose(true);
             GC.SuppressFinalize(this);
         }
 
@@ -223,13 +218,13 @@ namespace Kafka.Client.Producers.Sync
                 return;
             }
 
-            if (this.disposed)
+            if (disposed)
             {
                 return;
             }
 
-            this.disposed = true;
-            lock(this)
+            disposed = true;
+            lock (this)
             {
                 Disconnect();
             }
@@ -240,9 +235,9 @@ namespace Kafka.Client.Producers.Sync
         /// </summary>
         private void EnsuresNotDisposed()
         {
-            if (this.disposed)
+            if (disposed)
             {
-                throw new ObjectDisposedException(this.GetType().Name);
+                throw new ObjectDisposedException(GetType().Name);
             }
         }
     }
