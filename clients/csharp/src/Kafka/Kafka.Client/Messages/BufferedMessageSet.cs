@@ -215,6 +215,9 @@ namespace Kafka.Client.Messages
             short errorCode = reader.ReadInt16();
             if (errorCode != KafkaException.NoError)
             {
+                if (errorCode == KafkaException.OffsetOutOfRangeCode)
+                    return new BufferedMessageSet(Enumerable.Empty<Message>(), errorCode, initialOffset);
+
                 throw new KafkaException(errorCode);
             }
 
