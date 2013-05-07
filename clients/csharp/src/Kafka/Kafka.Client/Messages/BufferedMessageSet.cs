@@ -213,9 +213,9 @@ namespace Kafka.Client.Messages
             }
 
             short errorCode = reader.ReadInt16();
-            if (errorCode != KafkaException.NoError)
+            if (errorCode != ErrorMapping.NoError)
             {
-                if (errorCode == KafkaException.OffsetOutOfRangeCode)
+                if (errorCode == ErrorMapping.OffsetOutOfRangeCode)
                     return new BufferedMessageSet(Enumerable.Empty<Message>(), errorCode, initialOffset);
 
                 throw new KafkaException(errorCode);
@@ -252,7 +252,7 @@ namespace Kafka.Client.Messages
             while (readed < size);
             if (size != readed)
             {
-                throw new KafkaException(KafkaException.InvalidRetchSizeCode);
+                throw new KafkaException(ErrorMapping.InvalidFetchSizeCode);
             }
 
             return new BufferedMessageSet(messages, initialOffset);
@@ -269,7 +269,7 @@ namespace Kafka.Client.Messages
             int readed = 0;
             short errorCode = reader.ReadInt16();
             readed += 2;
-            if (errorCode != KafkaException.NoError)
+            if (errorCode != ErrorMapping.NoError)
             {
                 throw new KafkaException(errorCode);
             }
