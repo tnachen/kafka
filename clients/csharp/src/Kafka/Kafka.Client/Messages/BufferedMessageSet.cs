@@ -38,13 +38,12 @@ namespace Kafka.Client.Messages
     public class BufferedMessageSet : MessageSet, IEnumerable<MessageAndOffset>, IEnumerator<MessageAndOffset>
     {
         private static readonly ILog Logger = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
-        private MemoryStream topIter;
         private int topIterPosition;
         private long currValidBytes = 0;
         private IEnumerator<MessageAndOffset> innerIter = null;
+        private bool innerDone = true;
         private long lastMessageSize = 0;
-        private long deepValidByteCount = -1;
-        private long shallowValidByteCount = -1;
+        private long initialOffset = 0;
         private ConsumerIteratorState state = ConsumerIteratorState.NotReady;
         private MessageAndOffset nextItem;
 
@@ -53,7 +52,7 @@ namespace Kafka.Client.Messages
         /// </summary>
         public int ErrorCode { get; private set; }
 
-        /// <summary>
+        
         /// Initializes a new instance of the <see cref="BufferedMessageSet"/> class.
         /// </summary>
         /// <param name="messages">
@@ -62,6 +61,12 @@ namespace Kafka.Client.Messages
         public BufferedMessageSet(IEnumerable<Message> messages)
             : this(messages, ErrorMapping.NoError)
         {
+        }
+
+        public BufferedMessageSet(IEnumerable<Message> messages, long initialOffset)
+            : this(messages, ErrorMapping.NoError, initialOffset)
+        {
+            
         }
 
         /// <summary>
@@ -73,12 +78,14 @@ namespace Kafka.Client.Messages
         /// <param name="errorCode">
         /// The error code.
         /// </param>
-        public BufferedMessageSet(IEnumerable<Message> messages, int errorCode)
+        public BufferedMessageSet(IEnumerable<Message> messages, int errorCode, long initialOffset)
         {
             int length = GetMessageSetSize(messages);
             this.Messages = messages;
             this.ErrorCode = errorCode;
             this.topIterPosition = 0;
+            this.initialOffset = initialOffset;
+            this.currValidBytes = initialOffset;
         }
 
         /// <summary>
@@ -123,12 +130,11 @@ namespace Kafka.Client.Messages
         {
             get
             {
-                if (!MoveNext())
+                if (state != ConsumerIteratorState.Ready && state != ConsumerIteratorState.Done)
                 {
                     throw new NoSuchElementException();
                 }
 
-                state = ConsumerIteratorState.NotReady;
                 if (nextItem != null)
                 {
                     return nextItem;
@@ -199,23 +205,26 @@ namespace Kafka.Client.Messages
             return sb.ToString();
         }
 
-        internal static BufferedMessageSet ParseFrom(KafkaBinaryReader reader, int size)
+        internal static BufferedMessageSet ParseFrom(KafkaBinaryReader reader, int size, long initialOffset)
         {
             if (size == 0)
             {
-                return new BufferedMessageSet(Enumerable.Empty<Message>());
+                return new BufferedMessageSet(Enumerable.Empty<Message>(), initialOffset);
             }
 
             short errorCode = reader.ReadInt16();
-            if (errorCode != KafkaException.NoError)
+            if (errorCode != ErrorMapping.NoError)
             {
+                if (errorCode == ErrorMapping.OffsetOutOfRangeCode)
+                    return new BufferedMessageSet(Enumerable.Empty<Message>(), errorCode, initialOffset);
+
                 throw new KafkaException(errorCode);
             }
 
             int readed = 2;
             if (readed == size)
             {
-                return new BufferedMessageSet(Enumerable.Empty<Message>());
+                return new BufferedMessageSet(Enumerable.Empty<Message>(), initialOffset);
             }
 
             var messages = new List<Message>();
@@ -223,6 +232,19 @@ namespace Kafka.Client.Messages
             {
                 int msgSize = reader.ReadInt32();
                 readed += 4;
+                int sizeNotUsed = size - readed;
+                if (msgSize > sizeNotUsed || msgSize < 0)
+                {
+                    if (messages.Count == 0 || msgSize < 0)
+                    {
+                        string errorMessage =
+                            String.Format(
+                                "Invalid message size. Read size = {0}, the remaining data size = {1} (possible causes (1) a single message larger than the fetch size; (2) log corruption)",
+                                msgSize, sizeNotUsed);
+                        throw new InvalidMessageSizeException(errorMessage);
+                    }
+                    return new BufferedMessageSet(messages, initialOffset);
+                }
                 Message msg = Message.ParseFrom(reader, msgSize);
                 readed += msgSize;
                 messages.Add(msg);
@@ -230,13 +252,13 @@ namespace Kafka.Client.Messages
             while (readed < size);
             if (size != readed)
             {
-                throw new KafkaException(KafkaException.InvalidRetchSizeCode);
+                throw new KafkaException(ErrorMapping.InvalidFetchSizeCode);
             }
 
-            return new BufferedMessageSet(messages);
+            return new BufferedMessageSet(messages, initialOffset);
         }
 
-        internal static IList<BufferedMessageSet> ParseMultiFrom(KafkaBinaryReader reader, int size, int count)
+        internal static IList<BufferedMessageSet> ParseMultiFrom(KafkaBinaryReader reader, int size, int count, List<long> initialOffsets)
         {
             var result = new List<BufferedMessageSet>();
             if (size == 0)
@@ -247,7 +269,7 @@ namespace Kafka.Client.Messages
             int readed = 0;
             short errorCode = reader.ReadInt16();
             readed += 2;
-            if (errorCode != KafkaException.NoError)
+            if (errorCode != ErrorMapping.NoError)
             {
                 throw new KafkaException(errorCode);
             }
@@ -256,14 +278,14 @@ namespace Kafka.Client.Messages
             {
                 int partSize = reader.ReadInt32();
                 readed += 4;
-                var item = ParseFrom(reader, partSize);
+                var item = ParseFrom(reader, partSize, initialOffsets[i]);
                 readed += partSize;
                 result.Add(item);
-            }
-
-            if (size != readed)
-            {
-                throw new KafkaException(KafkaException.InvalidRetchSizeCode);
+                var totalSetSize = item.SetSize + 2;// 2 is the size of int16 that is the error info
+                if (totalSetSize != partSize)
+                {
+                    break;
+                }
             }
 
             return result;
@@ -284,7 +306,7 @@ namespace Kafka.Client.Messages
 
             return new BufferedMessageSet(messages);
         }
-
+        
         public IEnumerator<MessageAndOffset> GetEnumerator()
         {
             return this;
@@ -295,11 +317,6 @@ namespace Kafka.Client.Messages
             return GetEnumerator();
         }
 
-        private bool InnerDone()
-        {
-            return innerIter == null || !innerIter.MoveNext();
-        }
-
         private MessageAndOffset MakeNextOuter()
         {
             if (topIterPosition >= this.Messages.Count())
@@ -308,6 +325,7 @@ namespace Kafka.Client.Messages
             }
 
             Message newMessage = this.Messages.ToList()[topIterPosition];
+            lastMessageSize = newMessage.Size;
             topIterPosition++;
             switch (newMessage.CompressionCodec)
             {
@@ -321,6 +339,7 @@ namespace Kafka.Client.Messages
                     }
 
                     innerIter = null;
+                    innerDone = true;
                     currValidBytes += 4 + newMessage.Size;
                     return new MessageAndOffset(newMessage, currValidBytes);
                 default:
@@ -330,6 +349,7 @@ namespace Kafka.Client.Messages
                     }
 
                     innerIter = CompressionUtils.Decompress(newMessage).GetEnumerator();
+                    innerDone = !innerIter.MoveNext();
                     return MakeNext();
             }
         }
@@ -338,16 +358,17 @@ namespace Kafka.Client.Messages
         {
             if (Logger.IsDebugEnabled)
             {
-                Logger.DebugFormat(CultureInfo.CurrentCulture, "MakeNext() in deepIterator: innerDone = {0}", InnerDone());
+                Logger.DebugFormat(CultureInfo.CurrentCulture, "MakeNext() in deepIterator: innerDone = {0}", innerDone);
             }
 
-            switch (InnerDone())
+            switch (innerDone)
             {
                 case true:
                     return MakeNextOuter();
                 default:
                     var messageAndOffset = innerIter.Current;
-                    if (!innerIter.MoveNext())
+                    innerDone = !innerIter.MoveNext();
+                    if (innerDone)
                     {
                         currValidBytes += 4 + lastMessageSize;
                     }
@@ -377,8 +398,6 @@ namespace Kafka.Client.Messages
             {
                 case ConsumerIteratorState.Done:
                     return false;
-                case ConsumerIteratorState.Ready:
-                    return true;
                 default:
                     return MaybeComputeNext();
             }
@@ -402,6 +421,10 @@ namespace Kafka.Client.Messages
         public void Reset()
         {
             this.topIterPosition = 0;
+            this.currValidBytes = initialOffset;
+            this.lastMessageSize = 0;
+            this.innerIter = null;
+            this.innerDone = true;
         }
     }
 }

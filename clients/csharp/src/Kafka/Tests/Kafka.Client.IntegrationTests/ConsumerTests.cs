@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+using Kafka.Client.Cfg;
+using Kafka.Client.Utils;
+
 namespace Kafka.Client.IntegrationTests
 {
     using System;
@@ -29,6 +32,7 @@ namespace Kafka.Client.IntegrationTests
     using Kafka.Client.Producers.Sync;
     using Kafka.Client.Requests;
     using NUnit.Framework;
+    using System.Linq;
 
     [TestFixture]
     public class ConsumerTests : IntegrationFixtureBase
@@ -47,6 +51,7 @@ namespace Kafka.Client.IntegrationTests
         {
             var prodConfig = this.SyncProducerConfig1;
             var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            var consConf = this.ConsumerConfig1;
 
             // first producing
             string payload1 = "kafka 1.";
@@ -61,6 +66,15 @@ namespace Kafka.Client.IntegrationTests
             using (var producer = new SyncProducer(prodConfig))
             {
                 producer.Send(producerRequest);
+            }
+
+            var consumer = new Consumer(consConf);
+            long offset = 0;
+            var result = consumer.Fetch(
+                new FetchRequest(CurrentTestTopic, 0, offset, 400));
+            foreach (var resultItem in result)
+            {
+                offset += resultItem.Offset;
             }
 
             // now consuming
@@ -92,6 +106,161 @@ namespace Kafka.Client.IntegrationTests
         }
 
         [Test]
+        public void SimpleSyncProducerSendsLotsOfMessagesAndConsumerConnectorGetsThemBack()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            var consConf = this.ConsumerConfig1;
+            int numberOfMessages = 500;
+            int messageSize = 0;
+
+            List<Message> messagesToSend = new List<Message>();
+            
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    string payload1 = "kafka 1.";
+                    byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                    var msg = new Message(payloadData1);
+                    messagesToSend.Add(msg);
+                    if (i == 0)
+                    {
+                        messageSize = msg.Size;
+                    }
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() { msg });
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            // now consuming
+            int resultCount = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { CurrentTestTopic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[CurrentTestTopic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(messageSize, message.Size);
+                            resultCount++;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            Assert.AreEqual(numberOfMessages, resultCount);
+        }
+
+        [TestCase(null)] //default MaxQueuedChunks = 10
+        [TestCase(4)]
+        [TestCase(15)]
+        public void SimpleSyncProducerSendsLotsOfMessagesAndConsumerConnectorGetsThemBackWithMaxQueuedChunksCheck(int? maxQueuedChunks)
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            consumerConfig.FetchSize = 100;
+            var consConf = this.ConsumerConfig1;
+            int numberOfMessages = 1000;
+
+            List<Message> messagesToSend = new List<Message>();
+
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    string payload1 = "kafka 1.";
+                    byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                    var msg = new Message(payloadData1);
+                    messagesToSend.Add(msg);
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() { msg });
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            if (maxQueuedChunks.HasValue)
+            {
+                consumerConfig.MaxQueuedChunks = maxQueuedChunks.Value;
+            }
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { CurrentTestTopic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+
+                Thread.Sleep(5000);
+
+                var queues =
+                    ReflectionHelper.GetInstanceField
+                        <IDictionary<Tuple<string, string>, BlockingCollection<FetchedDataChunk>>>("queues",
+                                                                                                   consumerConnector);
+                var queue = queues.First().Value;
+                
+                Assert.AreEqual(maxQueuedChunks.HasValue ? maxQueuedChunks.Value : ConsumerConfiguration.DefaultMaxQueuedChunks, queue.Count);
+            }
+        }
+
+        [Test]
+        public void SimpleSyncProducerSendsLotsOfMessagesAndConsumerConnectorGetsThemBackWithMaxQueuedChunksRefillCheck()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            consumerConfig.FetchSize = 100;
+            int numberOfMessages = 1000;
+
+            List<Message> messagesToSend = new List<Message>();
+
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    string payload1 = "kafka 1.";
+                    byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                    var msg = new Message(payloadData1);
+                    messagesToSend.Add(msg);
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() {msg});
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> {{CurrentTestTopic, 1}};
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+
+                Thread.Sleep(5000);
+
+                var queues =
+                    ReflectionHelper.GetInstanceField
+                        <IDictionary<Tuple<string, string>, BlockingCollection<FetchedDataChunk>>>("queues",
+                                                                                                   consumerConnector);
+                var queue = queues.First().Value;
+
+                Assert.AreEqual(ConsumerConfiguration.DefaultMaxQueuedChunks, queue.Count);
+
+                var sets = messages[CurrentTestTopic];
+                var firstSet = sets[0];
+                firstSet.Take(5); //this should take at least one chunk from the queue
+
+                Thread.Sleep(2000); //a new chunk should be immediately inserted into the queue
+
+                // the queue should refill to the default max amount of chunks
+                Assert.AreEqual(ConsumerConfiguration.DefaultMaxQueuedChunks, queue.Count);
+            }
+        }
+
+        [Test]
         public void OneMessageIsSentAndReceivedThenExceptionsWhenNoMessageThenAnotherMessageIsSentAndReceived()
         {
             var prodConfig = this.SyncProducerConfig1;
@@ -119,8 +288,6 @@ namespace Kafka.Client.IntegrationTests
                     Assert.AreEqual(msg1.ToString(), enumerator.Current.ToString());
 
                     Assert.Throws<ConsumerTimeoutException>(() => enumerator.MoveNext());
-
-                    Assert.Throws<IllegalStateException>(() => enumerator.MoveNext()); // iterator is in failed state
 
                     enumerator.Reset();
 
@@ -302,6 +469,512 @@ namespace Kafka.Client.IntegrationTests
             Assert.AreEqual(2, resultMessages.Count);
             Assert.AreEqual(msg1.ToString(), resultMessages[0].ToString());
             Assert.AreEqual(msg2.ToString(), resultMessages[1].ToString());
+        }
+
+        [Test]
+        public void SimpleSyncProducerSendsLotsOfMessagesIncreasingTheSizeAndConsumerConnectorGetsThemBack()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            var consConf = this.ConsumerConfig1;
+            consumerConfig.AutoCommitInterval = 1000;
+            int numberOfMessagesToSend = 2000;
+            string topic = CurrentTestTopic;
+
+            var msgList = new List<Message>();
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessagesToSend; i++)
+                {
+                    string payload = CreatePayloadByNumber(i);
+                    byte[] payloadData = Encoding.UTF8.GetBytes(payload);
+                    var msg = new Message(payloadData);
+                    msgList.Add(msg);
+                    var producerRequest = new ProducerRequest(topic, 0, new List<Message>() { msg });
+                    producer.Send(producerRequest);
+                }
+            }
+
+            // now consuming
+            int messageNumberCounter = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { topic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[topic];
+                
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(CreatePayloadByNumber(messageNumberCounter), Encoding.UTF8.GetString(message.Payload)); 
+                            messageNumberCounter++;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            Assert.AreEqual(numberOfMessagesToSend, messageNumberCounter);
+        }
+
+        private string CreatePayloadByNumber(int number)
+        {
+            return "kafkaTest " + new string('a', number);
+        }
+
+        [Test]
+        public void SimpleSyncProducerSendsLotsOfCompressedMessagesAndConsumerConnectorGetsThemBack()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            int numberOfMessages = 500;
+            int messagesPerPackage = 5;
+            int messageSize = 0;
+
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    var messagePackageList = new List<Message>();
+                    for (int messageInPackageNr = 0; messageInPackageNr < messagesPerPackage; messageInPackageNr++)
+                    {
+                        string payload1 = "kafka 1.";
+                        byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                        var msg = new Message(payloadData1);
+                        messagePackageList.Add(msg);
+                        if (i == 0 && messageInPackageNr == 0)
+                        {
+                            messageSize = msg.Size;
+                        }
+                    }
+                    var packageMessage = CompressionUtils.Compress(messagePackageList, CompressionCodecs.GZIPCompressionCodec);
+                    
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() { packageMessage });
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            // now consuming
+            int resultCount = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { CurrentTestTopic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[CurrentTestTopic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(messageSize, message.Size);
+                            resultCount++;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            Assert.AreEqual(numberOfMessages * messagesPerPackage, resultCount);
+        }
+
+        [Test]
+        public void SimpleSyncProducerSendsLotsOfCompressedMessagesAndConsumerConnectorGetsThemBackWithAbreakInTheMiddle()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            int numberOfMessages = 500;
+            int messagesPerPackage = 5;
+            int messageSize = 0;
+            int breakAtMessageNr = 1573;
+            int partOfPackedMessagesThatWillBeConsumedTwice = breakAtMessageNr % messagesPerPackage;
+
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    var messagePackageList = new List<Message>();
+                    for (int messageInPackageNr = 0; messageInPackageNr < messagesPerPackage; messageInPackageNr++)
+                    {
+                        string payload1 = "kafka 1.";
+                        byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                        var msg = new Message(payloadData1);
+                        messagePackageList.Add(msg);
+                        if (i == 0 && messageInPackageNr == 0)
+                        {
+                            messageSize = msg.Size;
+                        }
+                    }
+                    var packageMessage = CompressionUtils.Compress(messagePackageList, CompressionCodecs.GZIPCompressionCodec);
+
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() { packageMessage });
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            // now consuming
+            int resultCount = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { CurrentTestTopic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[CurrentTestTopic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(messageSize, message.Size);
+                            resultCount++;
+                            if (resultCount == breakAtMessageNr)
+                            {
+                                break;
+                            }
+                        }
+                        if (resultCount == breakAtMessageNr)
+                        {
+                            break;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { CurrentTestTopic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[CurrentTestTopic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(messageSize, message.Size);
+                            resultCount++;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            Assert.AreEqual(numberOfMessages * messagesPerPackage + partOfPackedMessagesThatWillBeConsumedTwice, resultCount);
+        }
+
+        [Test]
+        public void SimpleSyncProducerSendsLotsOfTwiceCompressedMessagesAndConsumerConnectorGetsThemBack()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            int numberOfMessages = 500;
+            int messagesPerPackage = 5;
+            int messageSize = 0;
+            int messagesPerInnerPackage = 5;
+            
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    var messagePackageList = new List<Message>();
+                    for (int messageInPackageNr = 0; messageInPackageNr < messagesPerPackage; messageInPackageNr++)
+                    {
+                        var innerMessagePackageList = new List<Message>();
+                        for (int inner = 0; inner < messagesPerInnerPackage; inner++)
+                        {
+                            string payload1 = "kafka 1.";
+                            byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                            var msg = new Message(payloadData1);
+                            innerMessagePackageList.Add(msg);
+                        }
+                        var innerPackageMessage = CompressionUtils.Compress(innerMessagePackageList, CompressionCodecs.GZIPCompressionCodec);
+                        messagePackageList.Add(innerPackageMessage);
+                    }
+                    var packageMessage = CompressionUtils.Compress(messagePackageList, CompressionCodecs.GZIPCompressionCodec);
+
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() { packageMessage });
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            // now consuming
+            int resultCount = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { CurrentTestTopic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[CurrentTestTopic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            resultCount++;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            Assert.AreEqual(numberOfMessages * messagesPerPackage * messagesPerInnerPackage, resultCount);
+        }
+
+        [Test]
+        public void SimpleSyncProducerSendsLotsOfCompressedMessagesWithIncreasedSizeAndConsumerConnectorGetsThemBack()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            consumerConfig.AutoCommit = true;
+            consumerConfig.AutoCommitInterval = 100;
+            int numberOfMessages = 2000;
+            int messagesPerPackage = 5;
+            string topic = CurrentTestTopic;
+
+            var multipleBrokersHelper = new TestMultipleBrokersHelper(CurrentTestTopic);
+            multipleBrokersHelper.GetCurrentOffsets(
+                new[] { prodConfig });
+
+            int msgNr = 0;
+            long totalSize = 0;
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    var messagePackageList = new List<Message>();
+                    for (int messageInPackageNr = 0; messageInPackageNr < messagesPerPackage; messageInPackageNr++)
+                    {
+                        string payload1 = CreatePayloadByNumber(msgNr);
+                        byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                        var msg = new Message(payloadData1);
+                        totalSize += msg.Size;
+                        messagePackageList.Add(msg);
+                        msgNr++;
+                    }
+                    var packageMessage = CompressionUtils.Compress(messagePackageList, CompressionCodecs.GZIPCompressionCodec);
+                    producer.Send(topic, 0, new List<Message>() { packageMessage });
+                }
+            }
+
+            // now consuming
+            int resultCount = 0;
+            long resultSize = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { topic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[topic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(CreatePayloadByNumber(resultCount), Encoding.UTF8.GetString(message.Payload));
+                            resultCount++;
+                            resultSize += message.Size;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+            
+            Assert.AreEqual(numberOfMessages * messagesPerPackage, resultCount);
+            Assert.AreEqual(totalSize, resultSize);
+        }
+
+        [Test]
+        public void SimpleSyncProducerSendsLotsOfMessagesAndConsumerConnectorGetsThemBackWithVerySmallAutoCommitInterval()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            consumerConfig.AutoCommit = true;
+            consumerConfig.AutoCommitInterval = 10;
+            int numberOfMessages = 500;
+            int messageSize = 0;
+
+            List<Message> messagesToSend = new List<Message>();
+
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessages; i++)
+                {
+                    string payload1 = "kafka 1.";
+                    byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
+                    var msg = new Message(payloadData1);
+                    messagesToSend.Add(msg);
+                    if (i == 0)
+                    {
+                        messageSize = msg.Size;
+                    }
+                    producer.Send(CurrentTestTopic, 0, new List<Message>() { msg });
+                }
+            }
+
+            Thread.Sleep(2000);
+
+            // now consuming
+            int resultCount = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { CurrentTestTopic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[CurrentTestTopic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(messageSize, message.Size);
+                            resultCount++;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            Assert.AreEqual(numberOfMessages, resultCount);
+        }
+
+        [Test]
+        public void MaxFetchSizeBugShouldNotAppearWhenSmallFetchSizeAndSingleMessageSmallerThanFetchSize()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            consumerConfig.FetchSize = 256;
+            consumerConfig.NumberOfTries = 1;
+            consumerConfig.AutoCommitInterval = 1000;
+            int numberOfMessagesToSend = 100;
+            string topic = CurrentTestTopic;
+
+            var msgList = new List<Message>();
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessagesToSend; i++)
+                {
+                    string payload = CreatePayloadByNumber(i + 100);
+                    byte[] payloadData = Encoding.UTF8.GetBytes(payload);
+                    var msg = new Message(payloadData);
+                    msgList.Add(msg);
+                    var producerRequest = new ProducerRequest(topic, 0, new List<Message>() { msg });
+                    producer.Send(producerRequest);
+                }
+            }
+
+            // now consuming
+            int messageNumberCounter = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { topic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[topic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(CreatePayloadByNumber(messageNumberCounter + 100), Encoding.UTF8.GetString(message.Payload));
+                            messageNumberCounter++;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            Assert.AreEqual(numberOfMessagesToSend, messageNumberCounter);
+        }
+
+        [Test]
+        public void InvalidMessageSizeShouldAppearWhenMessageIsLArgerThanTheFetchSize()
+        {
+            var prodConfig = this.SyncProducerConfig1;
+            var consumerConfig = this.ZooKeeperBasedConsumerConfig;
+            consumerConfig.FetchSize = 256;
+            consumerConfig.NumberOfTries = 1;
+            consumerConfig.AutoCommitInterval = 1000;
+            int numberOfMessagesToSend = 1;
+            string topic = CurrentTestTopic;
+
+            var msgList = new List<Message>();
+            using (var producer = new SyncProducer(prodConfig))
+            {
+                for (int i = 0; i < numberOfMessagesToSend; i++)
+                {
+                    string payload = CreatePayloadByNumber(i + 10000);
+                    byte[] payloadData = Encoding.UTF8.GetBytes(payload);
+                    var msg = new Message(payloadData);
+                    msgList.Add(msg);
+                    var producerRequest = new ProducerRequest(topic, 0, new List<Message>() { msg });
+                    producer.Send(producerRequest);
+                }
+            }
+
+            // now consuming
+            int messageNumberCounter = 0;
+            using (IConsumerConnector consumerConnector = new ZookeeperConsumerConnector(consumerConfig, true))
+            {
+                var topicCount = new Dictionary<string, int> { { topic, 1 } };
+                var messages = consumerConnector.CreateMessageStreams(topicCount);
+                var sets = messages[topic];
+
+                try
+                {
+                    foreach (var set in sets)
+                    {
+                        foreach (var message in set)
+                        {
+                            Assert.AreEqual(CreatePayloadByNumber(messageNumberCounter + 100), Encoding.UTF8.GetString(message.Payload));
+                            messageNumberCounter++;
+                        }
+                    }
+                }
+                catch (ConsumerTimeoutException)
+                {
+                    // do nothing, this is expected
+                }
+            }
+
+            Assert.AreEqual(0, messageNumberCounter);
         }
     }
 }

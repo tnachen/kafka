@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+using Kafka.Client.Exceptions;
+
 namespace Kafka.Client.Producers
 {
     using System;
@@ -90,11 +92,19 @@ namespace Kafka.Client.Producers
 
             if (this.populateProducerPool)
             {
-                IDictionary<int, Broker> allBrokers = this.brokerPartitionInfo.GetAllBrokerInfo();
-                foreach (var broker in allBrokers)
+                try
                 {
-                    this.producerPool.AddProducer(
-                        new Broker(broker.Key, broker.Value.Host, broker.Value.Host, broker.Value.Port));
+                    IDictionary<int, Broker> allBrokers = this.brokerPartitionInfo.GetAllBrokerInfo();
+                    foreach (var broker in allBrokers)
+                    {                    
+                        this.producerPool.AddProducer(
+                            new Broker(broker.Key, broker.Value.Host, broker.Value.Host, broker.Value.Port));
+                    }
+                }
+                catch
+                {
+                    this.Dispose();
+                    throw;
                 }
             }
         }
@@ -188,7 +198,25 @@ namespace Kafka.Client.Producers
                 poolRequests.Add(poolRequest);
             }
 
-            this.producerPool.Send(poolRequests);
+            try
+            {
+                producerPool.Send(poolRequests);
+            }
+            catch (IllegalStateException e)
+            {
+                var exceptionData = e.Data;
+                var brokerId = 0;
+                if (exceptionData.Contains("brokerId") && 
+                    int.TryParse(exceptionData["brokerId"].ToString(), out brokerId))
+                {
+                    var broker = brokerPartitionInfo.GetBrokerInfo(brokerId);
+                    if (null != broker)
+                    {
+                        producerPool.AddProducer(broker);
+                        producerPool.Send(poolRequests);
+                    }
+                }
+            }
         }
 
         /// <summary>

@@ -48,6 +48,12 @@ namespace Kafka.Client.ZooKeeperIntegration
         private volatile bool disposed;
         private readonly int connectionTimeout;
 
+        private readonly ReaderWriterLockSlim slimLock = new ReaderWriterLockSlim();
+        public ReaderWriterLockSlim SlimLock
+        {
+            get { return this.slimLock; }
+        }
+
         /// <summary>
         /// Initializes a new instance of the <see cref="ZooKeeperClient"/> class.
         /// </summary>
@@ -143,7 +149,7 @@ namespace Kafka.Client.ZooKeeperIntegration
                 if (!this.WaitUntilConnected(this.connectionTimeout))
                 {
                     throw new ZooKeeperException(
-                        "Unable to connect to zookeeper server within timeout: " + this.connection.SessionTimeout);
+                        "Unable to connect to zookeeper server within timeout: " + this.connectionTimeout);
                 }
 
                 started = true;
@@ -174,7 +180,7 @@ namespace Kafka.Client.ZooKeeperIntegration
             Logger.Debug("Closing ZooKeeperClient...");
             this.shutdownTriggered = true;
             this.eventWorker.Interrupt();
-            this.eventWorker.Join(2000);
+            this.eventWorker.Join(5000);
             this.connection.Dispose();
             this.connection = null;
         }
@@ -629,34 +635,42 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </summary>
         public void Dispose()
         {
-            if (this.disposed)
-            {
-                return;
-            }
-
-            lock (this.shuttingDownLock)
+            this.slimLock.EnterWriteLock();
+            try
             {
                 if (this.disposed)
                 {
                     return;
                 }
 
-                this.disposed = true;
-            }
+                lock (this.shuttingDownLock)
+                {
+                    if (this.disposed)
+                    {
+                        return;
+                    }
 
-            try
-            {
-                this.Disconnect();
-            }
-            catch (ThreadInterruptedException)
-            {
-            }
-            catch (Exception exc)
-            {
-                Logger.Debug("Ignoring unexpected errors on closing ZooKeeperClient", exc);
-            }
+                    this.disposed = true;
+                }
 
-            Logger.Debug("Closing ZooKeeperClient... done");
+                try
+                {
+                    this.Disconnect();
+                }
+                catch (ThreadInterruptedException)
+                {
+                }
+                catch (Exception exc)
+                {
+                    Logger.Debug("Ignoring unexpected errors on closing ZooKeeperClient", exc);
+                }
+
+                Logger.Debug("Closing ZooKeeperClient... done");
+            }
+            finally
+            {
+                this.slimLock.ExitWriteLock();
+            }
         }
 
         /// <summary>

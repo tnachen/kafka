@@ -21,6 +21,7 @@ namespace Kafka.Client.Consumers
     using System.Collections.Concurrent;
     using System.Collections.Generic;
     using Kafka.Client.Messages;
+    using System.Threading;
 
     /// <summary>
     /// This class is a thread-safe IEnumerable of <see cref="Message"/> that can be enumerated to get messages.
@@ -31,13 +32,30 @@ namespace Kafka.Client.Consumers
 
         private readonly int consumerTimeoutMs;
 
-        private readonly ConsumerIterator iterator;
+        private ConsumerIterator iterator;
 
         internal KafkaMessageStream(BlockingCollection<FetchedDataChunk> queue, int consumerTimeoutMs)
         {
             this.consumerTimeoutMs = consumerTimeoutMs;
             this.queue = queue;
             this.iterator = new ConsumerIterator(this.queue, this.consumerTimeoutMs);
+        }
+
+        internal KafkaMessageStream(BlockingCollection<FetchedDataChunk> queue, int consumerTimeoutMs, CancellationToken token)
+        {
+            this.consumerTimeoutMs = consumerTimeoutMs;
+            this.queue = queue;
+            this.iterator = new ConsumerIterator(queue, consumerTimeoutMs, token);
+        }
+
+        public IEnumerable<Message> GetCancellable(CancellationToken cancellationToken)
+        {
+            return new KafkaMessageStream(this.queue, this.consumerTimeoutMs, cancellationToken);
+        }
+
+        public void Clear()
+        {
+            iterator.ClearIterator();
         }
 
         public IEnumerator<Message> GetEnumerator()

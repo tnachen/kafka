@@ -21,6 +21,8 @@ namespace Kafka.Client
     using System.IO;
     using System.Net.Sockets;
     using System.Threading;
+
+    using Kafka.Client.Exceptions;
     using Kafka.Client.Producers.Async;
     using Kafka.Client.Requests;
     using Kafka.Client.Serialization;
@@ -49,16 +51,24 @@ namespace Kafka.Client
             this.bufferSize = bufferSize;
             this.socketTimeout = socketTimeout;
 
-            // connection opened
-            this.client = new TcpClient(server, port)
-                {
-                    ReceiveTimeout = socketTimeout,
-                    SendTimeout = socketTimeout,
-                    ReceiveBufferSize = bufferSize,
-                    SendBufferSize = bufferSize
-                };
-            var stream = this.client.GetStream();
-            this.Reader = new KafkaBinaryReader(stream);
+            try
+            {
+                // connection opened
+                this.client = new TcpClient(server, port)
+                    {
+                        ReceiveTimeout = socketTimeout,
+                        SendTimeout = socketTimeout,
+                        ReceiveBufferSize = bufferSize,
+                        SendBufferSize = bufferSize
+                    };
+                var stream = this.client.GetStream();
+                this.Reader = new KafkaBinaryReader(stream);
+            }
+            catch (Exception e)
+            {
+                Dispose();
+                throw new KafkaConnectionException(e);
+            }
         }
 
         public KafkaBinaryReader Reader { get; private set; }
@@ -67,15 +77,27 @@ namespace Kafka.Client
         /// Writes a producer request to the server asynchronously.
         /// </summary>
         /// <param name="request">The request to make.</param>
-        public void BeginWrite(ProducerRequest request)
+        public void BeginWrite(AbstractRequest request)
         {
             this.EnsuresNotDisposed();
             Guard.NotNull(request, "request");
-            NetworkStream stream = client.GetStream();
-            byte[] data = request.RequestBuffer.GetBuffer();
-            stream.BeginWrite(data, 0, data.Length, asyncResult => ((NetworkStream)asyncResult.AsyncState).EndWrite(asyncResult), stream);
+
+            try
+            {
+                NetworkStream stream = client.GetStream();
+                byte[] data = request.RequestBuffer.GetBuffer();
+                stream.BeginWrite(data, 0, data.Length, asyncResult => ((NetworkStream)asyncResult.AsyncState).EndWrite(asyncResult), stream);
+            }
+            catch (InvalidOperationException e)
+            {
+                throw new KafkaConnectionException(e);
+            }
+            catch (IOException e)
+            {
+                throw new KafkaConnectionException(e);
+            }
         }
-        
+
         /// <summary>
         /// Writes a producer request to the server asynchronously.
         /// </summary>
@@ -95,21 +117,32 @@ namespace Kafka.Client
                 return;
             }
 
-            NetworkStream stream = client.GetStream();
-            var ctx = new RequestContext<ProducerRequest>(stream, request);
+            try
+            {
+                NetworkStream stream = client.GetStream();
+                var ctx = new RequestContext<ProducerRequest>(stream, request);
 
-            byte[] data = request.RequestBuffer.GetBuffer();
-            stream.BeginWrite(
-                data,
-                0,
-                data.Length,
-                delegate(IAsyncResult asyncResult)
+                byte[] data = request.RequestBuffer.GetBuffer();
+                stream.BeginWrite(
+                    data,
+                    0,
+                    data.Length,
+                    delegate(IAsyncResult asyncResult)
                     {
                         var context = (RequestContext<ProducerRequest>)asyncResult.AsyncState;
                         callback(context);
                         context.NetworkStream.EndWrite(asyncResult);
                     },
-                ctx);
+                    ctx);
+            }
+            catch (InvalidOperationException e)
+            {
+                throw new KafkaConnectionException(e);
+            }
+            catch (IOException e)
+            {
+                throw new KafkaConnectionException(e);
+            }
         }
 
         /// <summary>
@@ -119,21 +152,7 @@ namespace Kafka.Client
         /// Write timeout is defaulted to infitite.
         /// </remarks>
         /// <param name="request">The <see cref="ProducerRequest"/> to send to the server.</param>
-        public void Write(ProducerRequest request)
-        {
-            this.EnsuresNotDisposed();
-            Guard.NotNull(request, "request");
-            this.Write(request.RequestBuffer.GetBuffer());
-        }
-
-        /// <summary>
-        /// Writes a multi-producer request to the server.
-        /// </summary>
-        /// <remarks>
-        /// Write timeout is defaulted to infitite.
-        /// </remarks>
-        /// <param name="request">The <see cref="MultiProducerRequest"/> to send to the server.</param>
-        public void Write(MultiProducerRequest request)
+        public void Write(AbstractRequest request)
         {
             this.EnsuresNotDisposed();
             Guard.NotNull(request, "request");
@@ -146,51 +165,20 @@ namespace Kafka.Client
         /// <param name="data">The data to write to the server.</param>
         private void Write(byte[] data)
         {
-            NetworkStream stream = this.client.GetStream();
-            //// Send the message to the connected TcpServer. 
-            stream.Write(data, 0, data.Length);
-        }
-
-        /// <summary>
-        /// Writes a fetch request to the server.
-        /// </summary>
-        /// <remarks>
-        /// Write timeout is defaulted to infitite.
-        /// </remarks>
-        /// <param name="request">The <see cref="FetchRequest"/> to send to the server.</param>
-        public void Write(FetchRequest request)
-        {
-            this.EnsuresNotDisposed();
-            Guard.NotNull(request, "request");
-            this.Write(request.RequestBuffer.GetBuffer());
-        }
-
-        /// <summary>
-        /// Writes a multifetch request to the server.
-        /// </summary>
-        /// <remarks>
-        /// Write timeout is defaulted to infitite.
-        /// </remarks>
-        /// <param name="request">The <see cref="MultiFetchRequest"/> to send to the server.</param>
-        public void Write(MultiFetchRequest request)
-        {
-            this.EnsuresNotDisposed();
-            Guard.NotNull(request, "request");
-            this.Write(request.RequestBuffer.GetBuffer());
-        }
-
-        /// <summary>
-        /// Writes a offset request to the server.
-        /// </summary>
-        /// <remarks>
-        /// Write timeout is defaulted to infitite.
-        /// </remarks>
-        /// <param name="request">The <see cref="OffsetRequest"/> to send to the server.</param>
-        public void Write(OffsetRequest request)
-        {
-            this.EnsuresNotDisposed();
-            Guard.NotNull(request, "request");
-            this.Write(request.RequestBuffer.GetBuffer());
+            try
+            {
+                NetworkStream stream = this.client.GetStream();
+                //// Send the message to the connected TcpServer. 
+                stream.Write(data, 0, data.Length);
+            }
+            catch (InvalidOperationException e)
+            {
+                throw new KafkaConnectionException(e);
+            }
+            catch (IOException e)
+            {
+                throw new KafkaConnectionException(e);
+            }
         }
 
         /// <summary>

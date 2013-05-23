@@ -27,6 +27,11 @@ namespace Kafka.Client.IntegrationTests
     {
         protected string CurrentTestTopic { get; set; }
 
+        public IntegrationFixtureBase()
+        {
+            log4net.Config.XmlConfigurator.Configure();
+        }
+
         protected ProducerConfiguration ConfigBasedSyncProdConfig
         {
             get
@@ -79,6 +84,14 @@ namespace Kafka.Client.IntegrationTests
             get
             {
                 return ProducerConfiguration.Configure(ProducerConfiguration.DefaultSectionName + 2);
+            }
+        }
+
+        protected ProducerConfiguration ZooKeeperBasedAsyncProdConfig
+        {
+            get
+            {
+                return ProducerConfiguration.Configure(ProducerConfiguration.DefaultSectionName + 4);
             }
         }
 

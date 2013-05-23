@@ -107,11 +107,11 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// <remarks>
         /// Used for testing purpose
         /// </remarks>
-        public int IdleTime
+        public int? IdleTime
         {
             get
             {
-                return this.idleTime.HasValue ? Convert.ToInt32((DateTime.Now - this.idleTime.Value).TotalMilliseconds) : 0;
+                return this.idleTime.HasValue ? Convert.ToInt32((DateTime.Now - this.idleTime.Value).TotalMilliseconds) : (int?)null;
             }
         }
 
@@ -126,75 +126,81 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </remarks>
         public void Process(WatchedEvent e)
         {
-            this.EnsuresNotDisposed();
             Logger.Debug("Received event: " + e);
             this.zooKeeperEventWorker = Thread.CurrentThread;
-            if (this.shutdownTriggered)
+            if (this.shutdownTriggered || !this.slimLock.TryEnterReadLock(2000))
             {
                 Logger.Debug("ignoring event '{" + e.Type + " | " + e.Path + "}' since shutdown triggered");
                 return;
             }
-
-            bool stateChanged = e.Path == null;
-            bool znodeChanged = e.Path != null;
-            bool dataChanged =
-                e.Type == EventType.NodeDataChanged
-                || e.Type == EventType.NodeDeleted
-                || e.Type == EventType.NodeCreated
-                || e.Type == EventType.NodeChildrenChanged;
-
-            lock (this.somethingChanged)
+            try
             {
-                try
-                {
-                    if (stateChanged)
-                    {
-                        this.ProcessStateChange(e);
-                    }
+                this.EnsuresNotDisposed();
+                bool stateChanged = e.Path == null;
+                bool znodeChanged = e.Path != null;
+                bool dataChanged =
+                    e.Type == EventType.NodeDataChanged
+                    || e.Type == EventType.NodeDeleted
+                    || e.Type == EventType.NodeCreated
+                    || e.Type == EventType.NodeChildrenChanged;
 
-                    if (dataChanged)
-                    {
-                        this.ProcessDataOrChildChange(e);
-                    }
-                }
-                finally
+                lock (this.somethingChanged)
                 {
-                    if (stateChanged)
+                    try
                     {
-                        lock (this.stateChangedLock)
+                        if (stateChanged)
                         {
-                            Monitor.PulseAll(this.stateChangedLock);
+                            this.ProcessStateChange(e);
                         }
 
-                        if (e.State == KeeperState.Expired)
+                        if (dataChanged)
+                        {
+                            this.ProcessDataOrChildChange(e);
+                        }
+                    }
+                    finally
+                    {
+                        if (stateChanged)
+                        {
+                            lock (this.stateChangedLock)
+                            {
+                                Monitor.PulseAll(this.stateChangedLock);
+                            }
+
+                            if (e.State == KeeperState.Expired)
+                            {
+                                lock (this.znodeChangedLock)
+                                {
+                                    Monitor.PulseAll(this.znodeChangedLock);
+                                }
+
+                                foreach (string path in this.childChangedHandlers.Keys)
+                                {
+                                    this.Enqueue(new ZooKeeperChildChangedEventArgs(path));
+                                }
+
+                                foreach (string path in this.dataChangedHandlers.Keys)
+                                {
+                                    this.Enqueue(new ZooKeeperDataChangedEventArgs(path));
+                                }
+                            }
+                        }
+
+                        if (znodeChanged)
                         {
                             lock (this.znodeChangedLock)
                             {
                                 Monitor.PulseAll(this.znodeChangedLock);
                             }
-
-                            foreach (string path in this.childChangedHandlers.Keys)
-                            {
-                                this.Enqueue(new ZooKeeperChildChangedEventArgs(path));
-                            }
-
-                            foreach (string path in this.dataChangedHandlers.Keys)
-                            {
-                                this.Enqueue(new ZooKeeperDataChangedEventArgs(path));
-                            }
                         }
                     }
 
-                    if (znodeChanged)
-                    {
-                        lock (this.znodeChangedLock)
-                        {
-                            Monitor.PulseAll(this.znodeChangedLock);
-                        }
-                    }
+                    Monitor.PulseAll(this.somethingChanged);
                 }
-
-                Monitor.PulseAll(this.somethingChanged);
+            }
+            finally
+            {
+                this.slimLock.ExitReadLock();
             }
         }
 
@@ -206,7 +212,7 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </param>
         public void Subscribe(IZooKeeperStateListener listener)
         {
-            Guard.Assert<ArgumentNullException>(() => listener != null);
+            Guard.NotNull(listener, "listener");
 
             this.EnsuresNotDisposed();
             this.StateChanged += listener.HandleStateChanged;
@@ -222,7 +228,7 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </param>
         public void Unsubscribe(IZooKeeperStateListener listener)
         {
-            Guard.Assert<ArgumentNullException>(() => listener != null);
+            Guard.NotNull(listener, "listener");
 
             this.EnsuresNotDisposed();
             this.StateChanged -= listener.HandleStateChanged;
@@ -241,8 +247,8 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </param>
         public void Subscribe(string path, IZooKeeperChildListener listener)
         {
-            Guard.Assert<ArgumentException>(() => !string.IsNullOrEmpty(path));
-            Guard.Assert<ArgumentNullException>(() => listener != null);
+            Guard.NotNullNorEmpty(path, "path");
+            Guard.NotNull(listener, "listener");
 
             this.EnsuresNotDisposed();
             this.childChangedHandlers.AddOrUpdate(
@@ -264,8 +270,8 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </param>
         public void Unsubscribe(string path, IZooKeeperChildListener listener)
         {
-            Guard.Assert<ArgumentException>(() => !string.IsNullOrEmpty(path));
-            Guard.Assert<ArgumentNullException>(() => listener != null);
+            Guard.NotNullNorEmpty(path, "path");
+            Guard.NotNull(listener, "listener");
 
             this.EnsuresNotDisposed();
             this.childChangedHandlers.AddOrUpdate(
@@ -286,8 +292,8 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </param>
         public void Subscribe(string path, IZooKeeperDataListener listener)
         {
-            Guard.Assert<ArgumentException>(() => !string.IsNullOrEmpty(path));
-            Guard.Assert<ArgumentNullException>(() => listener != null);
+            Guard.NotNullNorEmpty(path, "path");
+            Guard.NotNull(listener, "listener");
 
             this.EnsuresNotDisposed();
             this.dataChangedHandlers.AddOrUpdate(
@@ -314,8 +320,8 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </param>
         public void Unsubscribe(string path, IZooKeeperDataListener listener)
         {
-            Guard.Assert<ArgumentException>(() => !string.IsNullOrEmpty(path));
-            Guard.Assert<ArgumentNullException>(() => listener != null);
+            Guard.NotNullNorEmpty(path, "path");
+            Guard.NotNull(listener, "listener");
 
             this.EnsuresNotDisposed();
             this.dataChangedHandlers.AddOrUpdate(
@@ -358,7 +364,7 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </returns>
         public IList<string> WatchForChilds(string path)
         {
-            Guard.Assert<ArgumentException>(() => !string.IsNullOrEmpty(path));
+            Guard.NotNullNorEmpty(path, "path");
 
             this.EnsuresNotDisposed();
             if (this.zooKeeperEventWorker != null && Thread.CurrentThread == this.zooKeeperEventWorker)
@@ -389,7 +395,7 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// </param>
         public void WatchForData(string path)
         {
-            Guard.Assert<ArgumentException>(() => !string.IsNullOrEmpty(path));
+            Guard.NotNullNorEmpty(path, "path");
 
             this.EnsuresNotDisposed();
             this.RetryUntilConnected(
@@ -576,7 +582,7 @@ namespace Kafka.Client.ZooKeeperIntegration
         /// Invokes subscribed handlers for ZooKeeeper state changes event
         /// </summary>
         /// <param name="e">
-        /// The event data.
+        /// The event data
         /// </param>
         private void OnStateChanged(ZooKeeperStateChangedEventArgs e)
         {

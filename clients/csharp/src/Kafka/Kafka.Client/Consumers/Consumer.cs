@@ -26,6 +26,7 @@ namespace Kafka.Client.Consumers
     using Kafka.Client.Messages;
     using Kafka.Client.Requests;
     using Kafka.Client.Utils;
+    using System.Linq;
     using log4net;
 
     /// <summary>
@@ -104,7 +105,7 @@ namespace Kafka.Client.Consumers
                     {
                         conn.Write(request);
                         int size = conn.Reader.ReadInt32();
-                        return BufferedMessageSet.ParseFrom(conn.Reader, size);
+                        return BufferedMessageSet.ParseFrom(conn.Reader, size, request.Offset);
                     }
                 }
                 catch (Exception ex)
@@ -152,7 +153,7 @@ namespace Kafka.Client.Consumers
                     {
                         conn.Write(request);
                         int size = conn.Reader.ReadInt32();
-                        return BufferedMessageSet.ParseMultiFrom(conn.Reader, size, request.ConsumerRequests.Count);
+                        return BufferedMessageSet.ParseMultiFrom(conn.Reader, size, request.ConsumerRequests.Count, request.ConsumerRequests.Select(x => x.Offset).ToList());
                     }
                 }
                 catch (Exception ex)
@@ -202,7 +203,7 @@ namespace Kafka.Client.Consumers
                         }
 
                         short errorCode = conn.Reader.ReadInt16();
-                        if (errorCode != KafkaException.NoError)
+                        if (errorCode != ErrorMapping.NoError)
                         {
                             throw new KafkaException(errorCode);
                         }

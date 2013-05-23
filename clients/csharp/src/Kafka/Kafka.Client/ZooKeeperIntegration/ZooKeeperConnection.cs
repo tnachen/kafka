@@ -196,7 +196,7 @@ namespace Kafka.Client.ZooKeeperIntegration
             Guard.NotNullNorEmpty(path, "path");
 
             this.EnsuresNotDisposed();
-            return this.Client.GetChildren(path, watch);
+            return new List<string> (this.Client.GetChildren(path, watch)).AsReadOnly();
         }
 
         /// <summary>
