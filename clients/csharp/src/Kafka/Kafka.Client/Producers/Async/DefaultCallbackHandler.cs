@@ -75,7 +75,7 @@ using Kafka.Client.Cluster;
                     outstandingProduceRequests = currentOutstandingRequests;
                     // back off and update the topic metadata cache before attempting another send operation
                     Thread.Sleep(this.producerConfig.ProducerRetryBackoffMiliseconds);
-                    this.brokerPartitionInfo.UpdateInfo();
+                    this.brokerPartitionInfo.UpdateInfo(producerConfig.VersionId, producerConfig.CorrelationId, producerConfig.ClientId);
                     remainingRetries -= 1;
                 }
             }
@@ -198,7 +198,7 @@ using Kafka.Client.Cluster;
         private IEnumerable<Partition> GetPartitionListForTopic(ProducerData<K, Message> pd)
         {
             Logger.DebugFormat("Getting the number of broker partitions registered for topic: {0}", pd.Topic);
-            var topicPartitionsList = this.brokerPartitionInfo.GetBrokerPartitionInfo(pd.Topic);
+            var topicPartitionsList = this.brokerPartitionInfo.GetBrokerPartitionInfo(producerConfig, pd.Topic);
             Logger.DebugFormat("Broker partitions registered for topic: {0} are {1}", pd.Topic, string.Join(",", topicPartitionsList.Select(p => p.PartId.ToString())));
             var totalNumPartitions = topicPartitionsList.Count();
             if (totalNumPartitions == 0)

@@ -16,6 +16,7 @@
  */
 
 using System.IO;
+using Kafka.Client.Cluster;
 using Kafka.Client.Exceptions;
 using Kafka.Client.Producers;
 
@@ -35,6 +36,9 @@ namespace Kafka.Client.Requests
     /// </summary>
     public class TopicMetadataRequest : AbstractRequest, IWritable
     {
+        private short versionId;
+        private int correlationId;
+        private string clientId;
         private const int DefaultNumberOfTopicsSize = 4;
         private const int DefaultDetailedMetadataSize = 2;
         private const int DefaultTimestampSize = 8;
@@ -47,9 +51,7 @@ namespace Kafka.Client.Requests
 
         public long? Timestamp { get; private set; }
 
-        public int? Count { get; private set; }
-
-        private TopicMetadataRequest(IEnumerable<string> topics, DetailedMetadataRequest detailedMetadata, long timestamp, int count)
+        private TopicMetadataRequest(IEnumerable<string> topics, short versionId, int correlationId, string clientId)
         {
             if(topics == null)
             {
@@ -62,9 +64,9 @@ namespace Kafka.Client.Requests
             }
 
             this.Topics = new List<string>(topics);
-            this.DetailedMetadata = detailedMetadata;
-            this.Timestamp = timestamp;
-            this.Count = count;
+            this.versionId = versionId;
+            this.correlationId = correlationId;
+            this.clientId = clientId;
             int length = GetRequestLength();
             this.RequestBuffer = new BoundedBuffer(length);
             this.WriteTo(this.RequestBuffer);
@@ -74,22 +76,13 @@ namespace Kafka.Client.Requests
         /// Creates simple request with no segment metadata information
         /// </summary>
         /// <param name="topics">list of topics</param>
+        /// <param name="versionId"></param>
+        /// <param name="correlationId"></param>
+        /// <param name="clientId"></param>
         /// <returns>request</returns>
-        public static TopicMetadataRequest Create(IEnumerable<string> topics)
+        public static TopicMetadataRequest Create(IEnumerable<string> topics, short versionId, int correlationId, string clientId)
         {
-            return new TopicMetadataRequest(topics, DetailedMetadataRequest.NoSegmentMetadata, 0, 0);
-        }
-
-        /// <summary>
-        /// Creates request with segment metadata information
-        /// </summary>
-        /// <param name="topics">list of topics</param>
-        /// <param name="timestamp"></param>
-        /// <param name="count"></param>
-        /// <returns>request</returns>
-        public static TopicMetadataRequest CreateWithMetadata(IEnumerable<string> topics, long timestamp = 0, int count = 0)
-        {
-            return new TopicMetadataRequest(topics, DetailedMetadataRequest.SegmentMetadata, timestamp, count);
+            return new TopicMetadataRequest(topics, versionId, correlationId, clientId);
         }
 
         public override RequestTypes RequestType
@@ -112,39 +105,36 @@ namespace Kafka.Client.Requests
         public void WriteTo(KafkaBinaryWriter writer)
         {
             Guard.NotNull(writer, "writer");
-
+            writer.Write(versionId);
+            writer.Write(correlationId);
+            writer.WriteShortString(clientId, AbstractRequest.DefaultEncoding);
             writer.Write(this.Topics.Count());
             foreach (var topic in Topics)
             {
                 writer.WriteShortString(topic, AbstractRequest.DefaultEncoding);
-            }
-            writer.Write((short)this.DetailedMetadata);
-            if (this.DetailedMetadata == DetailedMetadataRequest.SegmentMetadata)
-            {
-                writer.Write(this.Timestamp ?? 0);
-                writer.Write(this.Count ?? 0);
-            }
+            }            
         }
 
         public int GetRequestLength()
         {
-            var size = DefaultHeaderSize8 + DefaultNumberOfTopicsSize + this.Topics.Sum(x => BitWorks.GetShortStringLength(x, AbstractRequest.DefaultEncoding)) + DefaultDetailedMetadataSize;
-            if (this.DetailedMetadata == DetailedMetadataRequest.SegmentMetadata)
-            {
-                size += DefaultTimestampSize + DefaultCountSize;
-            }
+            var size = DefaultHeaderSize8 +
+                FetchRequest.DefaultVersionIdSize +
+                FetchRequest.DefaultCorrelationIdSize +
+                BitWorks.GetShortStringLength(this.clientId, DefaultEncoding) +
+                DefaultNumberOfTopicsSize +
+                this.Topics.Sum(x => BitWorks.GetShortStringLength(x, AbstractRequest.DefaultEncoding));
+            
             return size;
         }
 
         public static IEnumerable<TopicMetadata> DeserializeTopicsMetadataResponse(KafkaBinaryReader reader)
         {
-            //should I do anything withi this:
-            int length = reader.ReadInt32();
-
-            short errorCode = reader.ReadInt16();
-            if (errorCode != KafkaException.NoError)
+            int correlationId = reader.ReadInt32();
+            int brokerCount = reader.ReadInt32();
+            var brokers = new Broker[brokerCount];
+            for (int i = 0; i < brokerCount; ++i)
             {
-                //ignore the error
+                brokers[i] = Broker.ParseFrom(reader);
             }
 
             var numTopics = reader.ReadInt32();

@@ -182,6 +182,7 @@
     <Compile Include="Producers\PartitionData.cs" />
     <Compile Include="Producers\Partitioning\BrokerPartitionInfo.cs" />
     <Compile Include="Producers\Partitioning\DefaultStringPartitioner.cs" />
+    <Compile Include="Producers\Partitioning\ModPartitioner.cs" />
     <Compile Include="Producers\PartitionMetadata.cs" />
     <Compile Include="Producers\Producer.StrMsg.cs" />
     <Compile Include="Producers\Sync\SyncProducerPool.cs" />

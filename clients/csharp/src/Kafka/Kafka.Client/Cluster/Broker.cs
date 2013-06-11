@@ -16,7 +16,9 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Web.Script.Serialization;
 using Kafka.Client.Requests;
 using Kafka.Client.Utils;
 using Kafka.Client.Serialization;
@@ -59,23 +61,11 @@ namespace Kafka.Client.Cluster
             {
                 throw new ArgumentException(string.Format("Broker id {0} does not exist", id));
             }
-            var brokerInfo = brokerInfoString.Split(':');
-            if (brokerInfo.Length > 2)
-            {
-                int port;
-                if (int.TryParse(brokerInfo[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out port))
-                {
-                    return new Broker(id, brokerInfo[0], brokerInfo[1], int.Parse(brokerInfo[2], CultureInfo.InvariantCulture));
-                }
-                else
-                {
-                    throw new ArgumentException(String.Format(CultureInfo.CurrentCulture, "{0} is not a valid integer", brokerInfo[2]));
-                }
-            }
-            else
-            {
-                throw new ArgumentException(String.Format(CultureInfo.CurrentCulture, "{0} is not a valid BrokerInfoString", brokerInfoString));
-            }
+
+            var ser = new JavaScriptSerializer();
+            var result = ser.Deserialize<Dictionary<string, object>>(brokerInfoString);
+            var host = result["host"].ToString();
+            return new Broker(id, host, host, int.Parse(result["port"].ToString(), CultureInfo.InvariantCulture));            
         }
 
         /// <summary>

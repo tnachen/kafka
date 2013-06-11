@@ -185,18 +185,12 @@ namespace Kafka.Client.Cfg
             }
 
             set
-            {
-                if (value != null)
-                {
-                    if (this.broker != null)
-                    {
-                        throw new ConfigurationErrorsException("Partitioner cannot be used when broker list is set");
-                    }
-                }
-
+            {                
                 this.partitionerClass = value;
             }
         }
+
+        public short VersionId { get; set; }
 
         public ProducerTypes ProducerType { get; set; }
 

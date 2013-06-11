@@ -96,7 +96,7 @@ namespace Kafka.Client.IntegrationTests
         {
             using (var producer = new SyncProducer(prodConfig))
             {
-                TopicMetadataRequest topicMetadataRequest = TopicMetadataRequest.Create(new List<string> { topic });
+                TopicMetadataRequest topicMetadataRequest = TopicMetadataRequest.Create(new List<string> { topic }, 1, 1, "test");
                 IEnumerable<TopicMetadata> topicMetadata = null;
                 topicMetadata = producer.Send(topicMetadataRequest);
             }

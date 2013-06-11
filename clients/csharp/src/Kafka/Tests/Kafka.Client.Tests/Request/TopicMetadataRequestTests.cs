@@ -17,7 +17,7 @@ namespace Kafka.Client.Tests.Request
         {
             var topics = new List<string> { "topic1", "topic2" };
 
-            var request = TopicMetadataRequest.Create(topics);
+            var request = TopicMetadataRequest.Create(topics, 1, 1, "test");
 
             Assert.IsNotNull(request);
             Assert.AreEqual(topics.Count, request.Topics.Count());
@@ -32,30 +32,6 @@ namespace Kafka.Client.Tests.Request
 
             Assert.AreEqual(DetailedMetadataRequest.NoSegmentMetadata, request.DetailedMetadata);
             Assert.AreEqual(0, request.Timestamp);
-            Assert.AreEqual(0, request.Count);
-        }
-
-        [Test]
-        public void TopicMetadataRequestWithSegmentMetadataCreation()
-        {
-            var topics = new List<string> { "topic1", "topic2" };
-
-            var request = TopicMetadataRequest.CreateWithMetadata(topics, 10, 20);
-
-            Assert.IsNotNull(request);
-            Assert.AreEqual(topics.Count, request.Topics.Count());
-
-            for (int i = 0; i < topics.Count; i++)
-            {
-                var expectedTopic = topics[i];
-                var actualTopic = request.Topics.ElementAt(i);
-
-                Assert.AreEqual(expectedTopic, actualTopic);
-            }
-
-            Assert.AreEqual(DetailedMetadataRequest.SegmentMetadata, request.DetailedMetadata);
-            Assert.AreEqual(10, request.Timestamp);
-            Assert.AreEqual(20, request.Count);
         }
 
         [Test]
@@ -64,7 +40,7 @@ namespace Kafka.Client.Tests.Request
         {
             IList<string> topics = null;
 
-            TopicMetadataRequest.Create(topics);
+            TopicMetadataRequest.Create(topics, 1, 1, "test");
         }
 
         [Test]
@@ -73,7 +49,7 @@ namespace Kafka.Client.Tests.Request
         {
             IList<string> topics = new List<string>();
 
-            TopicMetadataRequest.Create(topics);
+            TopicMetadataRequest.Create(topics, 1, 1, "test");
         }
     }
 }

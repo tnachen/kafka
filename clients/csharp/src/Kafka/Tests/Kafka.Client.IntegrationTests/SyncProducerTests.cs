@@ -22,7 +22,7 @@ namespace Kafka.Client.IntegrationTests
             short versionId = 5;
             var prodConfig = this.SyncProducerConfig1;
 
-            TopicMetadataRequest topicMetadataRequest = TopicMetadataRequest.Create(new List<string> { CurrentTestTopic });
+            TopicMetadataRequest topicMetadataRequest = TopicMetadataRequest.Create(new List<string> { CurrentTestTopic }, versionId, correlationId, "test");
             IEnumerable<TopicMetadata> topicMetadata = null;
 
             string payload1 = "kafka 1.";
@@ -48,7 +48,7 @@ namespace Kafka.Client.IntegrationTests
                 var request = new ProducerRequest(
                     versionId,
                     correlationId,
-                    "",
+                    "test",
                     0,
                     0,
                     new List<TopicData>()

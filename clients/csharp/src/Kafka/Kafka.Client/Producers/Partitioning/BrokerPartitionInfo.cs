@@ -7,6 +7,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Kafka.Client.Cfg;
 using Kafka.Client.Cluster;
 using Kafka.Client.Exceptions;
 using Kafka.Client.Requests;
@@ -32,7 +33,7 @@ namespace Kafka.Client.Producers.Partitioning
             this.zkClient = this.producerPool.GetZkClient();
         }
 
-        public IEnumerable<Partition> GetBrokerPartitionInfo(string topic)
+        public IEnumerable<Partition> GetBrokerPartitionInfo(ProducerConfiguration producerConfig, string topic)
         {
             Logger.DebugFormat("Getting broker partition info for topic {0}", topic);
             //check if the cache has metadata for this topic
@@ -40,7 +41,7 @@ namespace Kafka.Client.Producers.Partitioning
             {
                 //refresh the topic metadata cache
                 Logger.InfoFormat("Fetching metadata for topic {0}", topic);
-                this.UpdateInfo(topic);
+                this.UpdateInfo(producerConfig.VersionId, producerConfig.CorrelationId, producerConfig.ClientId, topic);
                 if (!this.topicPartitionInfo.ContainsKey(topic))
                 {
                     throw new IllegalStateException(string.Format("Failed to fetch topic metadata for topic: {0}", topic));
@@ -70,14 +71,14 @@ namespace Kafka.Client.Producers.Partitioning
                 ).OrderBy(x => x.PartId);
         }
 
-        public void UpdateInfo(string topic = null)
+        public void UpdateInfo(short versionId, int correlationId, string clientId, string topic = null)
         {
             var producer = this.producerPool.GetAnyProducer();
             if (topic != null)
             {
-                var topicMetadataRequest = TopicMetadataRequest.Create(new List<string>() { topic });
+                var topicMetadataRequest = TopicMetadataRequest.Create(new List<string>() { topic }, versionId, correlationId, clientId);
                 var topicMetadataList = producer.Send(topicMetadataRequest);
-                var topicMetadata = topicMetadataList.Count() > 0 ? topicMetadataList.First() : null;
+                var topicMetadata = topicMetadataList.Any() ? topicMetadataList.First() : null;
                 if (topicMetadata != null)
                 {
                     Logger.InfoFormat("Fetched metadata for topics {0}", topic);
@@ -88,7 +89,7 @@ namespace Kafka.Client.Producers.Partitioning
             {
                 //refresh cache for all topics
                 var topics = topicPartitionInfo.Select(x => x.Key);
-                var topicMetadata = producer.Send(TopicMetadataRequest.Create(topics));
+                var topicMetadata = producer.Send(TopicMetadataRequest.Create(topics, versionId, correlationId, clientId));
                 topicMetadata.ForEach(metadata => this.topicPartitionInfo[metadata.Topic] = metadata);
             }
         }

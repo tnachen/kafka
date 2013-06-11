@@ -21,7 +21,7 @@ namespace Kafka.Client.IntegrationTests
 
             var topic = CurrentTestTopic;
 
-            TopicMetadataRequest request = TopicMetadataRequest.Create(new List<string> { topic });
+            TopicMetadataRequest request = TopicMetadataRequest.Create(new List<string> { topic }, 1, 1, "test");
 
             using (var producer = new SyncProducer(prodConfig))
             {
@@ -42,7 +42,7 @@ namespace Kafka.Client.IntegrationTests
             var topic1 = CurrentTestTopic + "_1";
             var topic2 = CurrentTestTopic + "_2";
 
-            var request = TopicMetadataRequest.Create(new List<string>() { topic1, topic2 });
+            var request = TopicMetadataRequest.Create(new List<string>() { topic1, topic2 }, 1, 1, "test");
 
             using (var producer = new SyncProducer(prodConfig))
             {
@@ -70,7 +70,7 @@ namespace Kafka.Client.IntegrationTests
             byte[] payloadData1 = Encoding.UTF8.GetBytes(payload1);
             var msg1 = new Message(payloadData1);
 
-            TopicMetadataRequest topicMetadataRequest = TopicMetadataRequest.Create(new List<string> { topic });
+            TopicMetadataRequest topicMetadataRequest = TopicMetadataRequest.Create(new List<string> { topic }, 1, 1, "test");
             IEnumerable<TopicMetadata> topicMetadata = null;
 
             using (var producer = new SyncProducer(prodConfig))
