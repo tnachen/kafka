@@ -24,4 +24,4 @@ IF [%JMX_PORT%] EQU [] (
 	set JMX_PORT=9999
 )
 
-kafka-run-class.bat kafka.Kafka %*
+windows\kafka-run-class.bat kafka.Kafka %*

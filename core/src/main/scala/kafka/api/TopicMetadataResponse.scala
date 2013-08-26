@@ -19,15 +19,21 @@ package kafka.api
 
 import kafka.cluster.Broker
 import java.nio.ByteBuffer
+import org.apache.log4j.Logger
 
 object TopicMetadataResponse {
+  val loggerName = this.getClass.getName
+  lazy val logger = Logger.getLogger(loggerName)
 
   def readFrom(buffer: ByteBuffer): TopicMetadataResponse = {
     val correlationId = buffer.getInt
+    logger.warn("read correlation id : " + correlationId)
     val brokerCount = buffer.getInt
+    logger.warn("read broker count: " + brokerCount)
     val brokers = (0 until brokerCount).map(_ => Broker.readFrom(buffer))
     val brokerMap = brokers.map(b => (b.id, b)).toMap
     val topicCount = buffer.getInt
+    logger.warn("read topic count: " + topicCount)
     val topicsMetadata = (0 until topicCount).map(_ => TopicMetadata.readFrom(buffer, brokerMap))
     new TopicMetadataResponse(topicsMetadata, correlationId)
   }

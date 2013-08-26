@@ -49,7 +49,7 @@ object KafkaBuild extends Build {
     buildNumber := System.getProperty("build.number", ""),
     version <<= (buildNumber, version)  { (build, version)  => if (build == "") version else version + "+" + build},
     releaseName <<= (name, version, scalaVersion) {(name, version, scalaVersion) => name + "_" + scalaVersion + "-" + version},
-    javacOptions ++= Seq("-Xlint:unchecked", "-source", "1.5"),
+    javacOptions ++= Seq("-Xlint:unchecked", "-source", "1.5", "-g"),
     parallelExecution in Test := false, // Prevent tests from overrunning each other
     libraryDependencies ++= Seq(
       "log4j"                 % "log4j"        % "1.2.15",

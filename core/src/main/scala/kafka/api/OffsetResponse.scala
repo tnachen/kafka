@@ -20,9 +20,12 @@ package kafka.api
 import java.nio.ByteBuffer
 import kafka.common.{ErrorMapping, TopicAndPartition}
 import kafka.api.ApiUtils._
+import org.apache.log4j.Logger
+import kafka.utils.Logging
 
 
-object OffsetResponse {
+object OffsetResponse extends Logging {
+
 
   def readFrom(buffer: ByteBuffer): OffsetResponse = {
     val correlationId = buffer.getInt
@@ -75,15 +78,22 @@ case class OffsetResponse(override val correlationId: Int,
 
   def writeTo(buffer: ByteBuffer) {
     buffer.putInt(correlationId)
+    warn("writting correlation id: " + correlationId)
     buffer.putInt(offsetsGroupedByTopic.size) // topic count
+    warn("topic count: " + offsetsGroupedByTopic.size)
     offsetsGroupedByTopic.foreach {
       case((topic, errorAndOffsetsMap)) =>
+        warn("writing topic: " + topic)
         writeShortString(buffer, topic)
         buffer.putInt(errorAndOffsetsMap.size) // partition count
+        warn("writing offset count: " + errorAndOffsetsMap.size)
         errorAndOffsetsMap.foreach {
           case((TopicAndPartition(_, partition), errorAndOffsets)) =>
+            warn("writing partition id: " + partition)
             buffer.putInt(partition)
+            warn("writing error :" + errorAndOffsets.error)
             buffer.putShort(errorAndOffsets.error)
+            warn("writing offset counts :" + errorAndOffsets.offsets.size)
             buffer.putInt(errorAndOffsets.offsets.size) // offset array length
             errorAndOffsets.offsets.foreach(buffer.putLong(_))
         }
