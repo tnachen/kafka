@@ -38,6 +38,11 @@ import org.apache.log4j.Logger
 import scala.Some
 import kafka.common.TopicAndPartition
 import java.util.concurrent.locks.ReentrantLock
+import scala.Some
+import kafka.common.TopicAndPartition
+import kafka.controller.ReassignedPartitionsContext
+import kafka.controller.PartitionAndReplica
+import kafka.controller.LeaderIsrAndControllerEpoch
 
 class ControllerContext(val zkClient: ZkClient,
                         val zkSessionTimeout: Int) {
@@ -334,18 +339,7 @@ class KafkaController(val config : KafkaConfig, zkClient: ZkClient) extends Logg
    * required to clean up internal controller data structures
    */
   def onControllerResignation() {
-    inLock(controllerContext.controllerLock) {
-      if (config.autoLeaderRebalanceEnable)
-        autoRebalanceScheduler.shutdown()
-      deleteTopicManager.shutdown()
-      Utils.unregisterMBean(KafkaController.MBeanName)
-      partitionStateMachine.shutdown()
-      replicaStateMachine.shutdown()
-      if(controllerContext.controllerChannelManager != null) {
-        controllerContext.controllerChannelManager.shutdown()
-        controllerContext.controllerChannelManager = null
-      }
-    }
+    shutdown(false)
   }
 
   /**
@@ -637,12 +631,17 @@ class KafkaController(val config : KafkaConfig, zkClient: ZkClient) extends Logg
    * it shuts down the partition and replica state machines. If not, those are a no-op. In addition to that, it also
    * shuts down the controller channel manager, if one exists (i.e. if it was the current controller)
    */
-  def shutdown() = {
+  def shutdown(isBrokerShutdown : Boolean = true) = {
     inLock(controllerContext.controllerLock) {
-      isRunning = false
+      if(isBrokerShutdown) {
+        isRunning = false
+      } else {
+        Utils.unregisterMBean(KafkaController.MBeanName)
+      }
+      deleteTopicManager.shutdown()
       partitionStateMachine.shutdown()
       replicaStateMachine.shutdown()
-      if (config.autoLeaderRebalanceEnable)
+      if(config.autoLeaderRebalanceEnable)
         autoRebalanceScheduler.shutdown()
       if(controllerContext.controllerChannelManager != null) {
         controllerContext.controllerChannelManager.shutdown()

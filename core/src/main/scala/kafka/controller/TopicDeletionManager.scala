@@ -22,6 +22,7 @@ import kafka.utils.Utils._
 import collection.Set
 import kafka.common.{ErrorMapping, TopicAndPartition}
 import kafka.api.{StopReplicaResponse, RequestOrResponse}
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * This manages the state machine for topic deletion.
@@ -70,10 +71,11 @@ class TopicDeletionManager(controller: KafkaController,
   val controllerContext = controller.controllerContext
   val partitionStateMachine = controller.partitionStateMachine
   val replicaStateMachine = controller.replicaStateMachine
+  val deleteLock: ReentrantLock = new ReentrantLock()
   var topicsToBeDeleted: mutable.Set[String] = mutable.Set.empty[String] ++ initialTopicsToBeDeleted
   var topicsIneligibleForDeletion: mutable.Set[String] = mutable.Set.empty[String] ++
     (initialTopicsIneligibleForDeletion & initialTopicsToBeDeleted)
-  val deleteTopicsCond = controllerContext.controllerLock.newCondition()
+  val deleteTopicsCond = deleteLock.newCondition()
   var deleteTopicStateChanged: Boolean = false
   var deleteTopicsThread: DeleteTopicsThread = null
   val isDeleteTopicEnabled = controller.config.deleteTopicEnable
@@ -351,6 +353,7 @@ class TopicDeletionManager(controller: KafkaController,
 
   class DeleteTopicsThread() extends ShutdownableThread("delete-topics-thread") {
     val zkClient = controllerContext.zkClient
+
     override def doWork() {
       inLock(controllerContext.controllerLock) {
         awaitTopicDeletionNotification()
