@@ -33,22 +33,30 @@ object Kafka extends Logging {
     try {
       val props = Utils.loadProps(args(0))
       val serverConfig = new KafkaConfig(props)
-      KafkaMetricsReporter.startReporters(serverConfig.props)
-      val kafkaServerStartble = new KafkaServerStartable(serverConfig)
+      //KafkaMetricsReporter.startReporters(serverConfig.props)
+      //val kafkaServerStartble = new KafkaServerStartable(serverConfig)
+      val server = new KafkaServer(serverConfig)
+      System.out.println("Starting")
+      server.startup()
+      System.out.println("Shutting")
+      server.shutdown()
+      System.out.println("Awaiting shutting")
+      server.awaitShutdown()
+      System.out.println("Done.")
 
       // attach shutdown handler to catch control-c
-      Runtime.getRuntime().addShutdownHook(new Thread() {
-        override def run() = {
-          kafkaServerStartble.shutdown
-        }
-      })
+      //Runtime.getRuntime().addShutdownHook(new Thread() {
+      //  override def run() = {
+      //    kafkaServerStartble.shutdown
+      //  }
+      //})
 
-      kafkaServerStartble.startup
-      kafkaServerStartble.awaitShutdown
+     // kafkaServerStartble.startup
+     // kafkaServerStartble.awaitShutdown
     }
     catch {
       case e: Throwable => fatal(e)
     }
-    System.exit(0)
+    //System.exit(0)
   }
 }

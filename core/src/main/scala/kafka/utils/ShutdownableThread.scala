@@ -31,8 +31,10 @@ abstract class ShutdownableThread(val name: String, val isInterruptible: Boolean
   def shutdown(): Unit = {
     info("Shutting down")
     isRunning.set(false)
-    if (isInterruptible)
+    if (isInterruptible) {
+      info("Interrupting")
       interrupt()
+    }
     shutdownLatch.await()
     info("Shutdown completed")
   }
