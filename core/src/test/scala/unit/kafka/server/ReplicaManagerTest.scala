@@ -24,23 +24,52 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
 import org.easymock.EasyMock
 import org.I0Itec.zkclient.ZkClient
-import kafka.cluster.Replica
-import kafka.log.{LogManager, LogConfig, Log}
+import kafka.log.{CleanerConfig, LogManager, LogConfig}
 
 class ReplicaManagerTest extends JUnit3Suite {
   @Test
   def testHighwaterMarkDirectoryMapping() {
     val props = TestUtils.createBrokerConfig(1)
-    val dir = "/tmp/kafka-logs/"
-    new File(dir).mkdir()
-    props.setProperty("log.dirs", dir)
+    val dir = TestUtils.tempDir()
+    props.setProperty("log.dirs", dir + File.separator)
     val config = new KafkaConfig(props)
     val zkClient = EasyMock.createMock(classOf[ZkClient])
-    val mockLogMgr = EasyMock.createMock(classOf[LogManager])
+    val mockLogMgr = createLogManager(dir)
     val time: MockTime = new MockTime()
     val rm = new ReplicaManager(config, time, zkClient, new MockScheduler(time), mockLogMgr, new AtomicBoolean(false))
     val partition = rm.getOrCreatePartition("test-topic", 1, 1)
-    partition.addReplicaIfNotExists(new Replica(1, partition, time, 0L, Option(new Log(new File("/tmp/kafka-logs/test-topic-1"), new LogConfig(), 0L, null))))
+    partition.getOrCreateReplica(1)
     rm.checkpointHighWatermarks()
+
+  }
+
+  @Test
+  def testHighwaterMarkRelativeDirectoryMapping() {
+    val props = TestUtils.createBrokerConfig(1)
+    val dir = new File("data/kafka-logs/")
+    dir.mkdir()
+    dir.deleteOnExit()
+    props.setProperty("log.dirs", "data/kafka-logs")
+    val config = new KafkaConfig(props)
+    val zkClient = EasyMock.createMock(classOf[ZkClient])
+    val mockLogMgr = createLogManager(dir)
+    val time: MockTime = new MockTime()
+    val rm = new ReplicaManager(config, time, zkClient, new MockScheduler(time), mockLogMgr, new AtomicBoolean(false))
+    val partition = rm.getOrCreatePartition("test-topic", 1, 1)
+    partition.getOrCreateReplica(1)
+    rm.checkpointHighWatermarks()
+  }
+
+  private def createLogManager(logDir: File): LogManager = {
+    val time = new MockTime()
+    return new LogManager(logDirs = Array(logDir),
+      topicConfigs = Map(),
+      defaultConfig = new LogConfig(),
+      cleanerConfig = CleanerConfig(enableCleaner = false),
+      flushCheckMs = 1000L,
+      flushCheckpointMs = 100000L,
+      retentionCheckMs = 1000L,
+      scheduler = time.scheduler,
+      time = time)
   }
 }

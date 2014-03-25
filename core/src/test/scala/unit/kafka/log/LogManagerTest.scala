@@ -201,6 +201,7 @@ class LogManagerTest extends JUnit3Suite {
   /**
    * Test that it is not possible to open two log managers using the same data directory
    */
+  @Test
   def testTwoLogManagersUsingSameDirFails() {
     try {
       new LogManager(Array(logDir), Map(), logConfig, cleanerConfig, 1000L, 10000L, 1000L, time.scheduler, time)
@@ -213,6 +214,7 @@ class LogManagerTest extends JUnit3Suite {
   /**
    * Test that recovery points are correctly written out to disk
    */
+  @Test
   def testCheckpointRecoveryPoints() {
     val topicA = TopicAndPartition("test-a", 1)
     val topicB = TopicAndPartition("test-b", 1)
@@ -228,5 +230,61 @@ class LogManagerTest extends JUnit3Suite {
     val checkpoints = new OffsetCheckpoint(new File(logDir, logManager.RecoveryPointCheckpointFile)).read()
     assertEquals("Recovery point should equal checkpoint", checkpoints(topicA), logA.recoveryPoint)
     assertEquals("Recovery point should equal checkpoint", checkpoints(topicB), logB.recoveryPoint)
+  }
+
+  /**
+   * Test that recovery points directory checking works with trailing slash
+   */
+  @Test
+  def testRecoveryDirectoryMappingWithTrailingSlash() {
+    logManager.shutdown()
+    logDir = TestUtils.tempDir()
+    logManager = new LogManager(logDirs = Array(new File(logDir.getAbsolutePath + File.separator)),
+      topicConfigs = Map(),
+      defaultConfig = logConfig,
+      cleanerConfig = cleanerConfig,
+      flushCheckMs = 1000L,
+      flushCheckpointMs = 100000L,
+      retentionCheckMs = 1000L,
+      scheduler = time.scheduler,
+      time = time)
+    logManager.startup
+    val topicA = TopicAndPartition("test-a", 1)
+    val logA = this.logManager.createLog(topicA, logConfig)
+    for(i <- 0 until 50)
+      logA.append(TestUtils.singleMessageSet("test".getBytes()))
+    logA.flush()
+    logManager.checkpointRecoveryPointOffsets()
+    val checkpoints = new OffsetCheckpoint(new File(logDir, logManager.RecoveryPointCheckpointFile)).read()
+    assertEquals("Recovery point should equal checkpoint", checkpoints(topicA), logA.recoveryPoint)
+  }
+
+  /**
+   * Test that recovery points directory checking works with trailing slash
+   */
+  @Test
+  def testRecoveryDirectoryMappingWithRelativeDirectory() {
+    logManager.shutdown()
+    logDir = new File("data" + File.separator + logDir.getName)
+    logDir.mkdirs()
+    logDir.deleteOnExit()
+    logManager = new LogManager(logDirs = Array(logDir),
+      topicConfigs = Map(),
+      defaultConfig = logConfig,
+      cleanerConfig = cleanerConfig,
+      flushCheckMs = 1000L,
+      flushCheckpointMs = 100000L,
+      retentionCheckMs = 1000L,
+      scheduler = time.scheduler,
+      time = time)
+    logManager.startup
+    val topicA = TopicAndPartition("test-a", 1)
+    val logA = this.logManager.createLog(topicA, logConfig)
+    for(i <- 0 until 50)
+      logA.append(TestUtils.singleMessageSet("test".getBytes()))
+    logA.flush()
+    logManager.checkpointRecoveryPointOffsets()
+    val checkpoints = new OffsetCheckpoint(new File(logDir, logManager.RecoveryPointCheckpointFile)).read()
+    assertEquals("Recovery point should equal checkpoint", checkpoints(topicA), logA.recoveryPoint)
   }
 }
