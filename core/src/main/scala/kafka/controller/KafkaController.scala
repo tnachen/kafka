@@ -28,7 +28,7 @@ import kafka.cluster.Broker
 import kafka.common._
 import kafka.log.LogConfig
 import kafka.metrics.{KafkaTimer, KafkaMetricsGroup}
-import kafka.server.{ZookeeperLeaderElector, KafkaConfig}
+import kafka.server._
 import kafka.utils.ZkUtils._
 import kafka.utils._
 import kafka.utils.Utils._
@@ -39,6 +39,13 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import scala.Some
 import kafka.common.TopicAndPartition
+import scala.Some
+import kafka.common.TopicAndPartition
+import scala.None
+import kafka.controller.ReassignedPartitionsContext
+import kafka.controller.PartitionAndReplica
+import kafka.controller.LeaderIsrAndControllerEpoch
+import kafka.server.BrokerState
 
 class ControllerContext(val zkClient: ZkClient,
                         val zkSessionTimeout: Int) {
@@ -154,7 +161,7 @@ object KafkaController extends Logging {
   }
 }
 
-class KafkaController(val config : KafkaConfig, zkClient: ZkClient) extends Logging with KafkaMetricsGroup with KafkaControllerMBean {
+class KafkaController(val config : KafkaConfig, zkClient: ZkClient, val brokerState: BrokerState) extends Logging with KafkaMetricsGroup with KafkaControllerMBean {
   this.logIdent = "[Controller " + config.brokerId + "]: "
   private var isRunning = true
   private val stateChangeLogger = KafkaController.stateChangeLogger
@@ -316,6 +323,7 @@ class KafkaController(val config : KafkaConfig, zkClient: ZkClient) extends Logg
       controllerContext.allTopics.foreach(topic => partitionStateMachine.registerPartitionChangeListener(topic))
       Utils.registerMBean(this, KafkaController.MBeanName)
       info("Broker %d is ready to serve as the new controller with epoch %d".format(config.brokerId, epoch))
+      brokerState.newState(RunningAsController)
       maybeTriggerPartitionReassignment()
       maybeTriggerPreferredReplicaElection()
       /* send partition leadership info to all live brokers */
@@ -351,6 +359,7 @@ class KafkaController(val config : KafkaConfig, zkClient: ZkClient) extends Logg
         controllerContext.controllerChannelManager.shutdown()
         controllerContext.controllerChannelManager = null
       }
+      brokerState.newState(RunningAsBroker)
     }
   }
 
