@@ -17,7 +17,7 @@
 package kafka.server
 
 import scala.collection._
-import kafka.utils.Logging
+import kafka.utils.{CoreUtils, Logging}
 import kafka.common._
 import java.io._
 
@@ -34,9 +34,10 @@ class OffsetCheckpoint(val file: File) extends Logging {
       // write to temp file and then swap with the existing file
       val temp = new File(file.getAbsolutePath + ".tmp")
 
-      val fileOutputStream = new FileOutputStream(temp)
-      val writer = new BufferedWriter(new OutputStreamWriter(fileOutputStream))
+      var writer: BufferedWriter = null
       try {
+        val fileOutputStream = new FileOutputStream(temp)
+        writer = new BufferedWriter(new OutputStreamWriter(fileOutputStream))
         // write the current version
         writer.write(0.toString)
         writer.newLine()
@@ -54,24 +55,26 @@ class OffsetCheckpoint(val file: File) extends Logging {
         // flush the buffer and then fsync the underlying file
         writer.flush()
         fileOutputStream.getFD().sync()
+
+        // swap new offset checkpoint file with previous one
+        if(!temp.renameTo(file)) {
+          // renameTo() fails on Windows if the destination file exists.
+          file.delete()
+          if(!temp.renameTo(file))
+            throw new IOException("File rename from %s to %s failed.".format(temp.getAbsolutePath, file.getAbsolutePath))
+        }
       } finally {
-        writer.close()
-      }
-      
-      // swap new offset checkpoint file with previous one
-      if(!temp.renameTo(file)) {
-        // renameTo() fails on Windows if the destination file exists.
-        file.delete()
-        if(!temp.renameTo(file))
-          throw new IOException("File rename from %s to %s failed.".format(temp.getAbsolutePath, file.getAbsolutePath))
+        if(writer != null)
+          CoreUtils.swallow(writer.close())
       }
     }
   }
 
   def read(): Map[TopicAndPartition, Long] = {
     lock synchronized {
-      val reader = new BufferedReader(new FileReader(file))
+      var reader: BufferedReader = null
       try {
+        reader = new BufferedReader(new FileReader(file))
         var line = reader.readLine()
         if(line == null)
           return Map.empty
@@ -87,7 +90,7 @@ class OffsetCheckpoint(val file: File) extends Logging {
             while(line != null) {
               val pieces = line.split("\\s+")
               if(pieces.length != 3)
-                throw new IOException("Malformed line in offset checkpoint file: '%s'.".format(line))
+                throw new IllegalStateException("Malformed line in offset checkpoint file: '%s'.".format(line))
               
               val topic = pieces(0)
               val partition = pieces(1).toInt
@@ -96,13 +99,14 @@ class OffsetCheckpoint(val file: File) extends Logging {
               line = reader.readLine()
             }
             if(offsets.size != expectedSize)
-              throw new IOException("Expected %d entries but found only %d".format(expectedSize, offsets.size))
+              throw new IllegalStateException("Expected %d entries but found only %d".format(expectedSize, offsets.size))
             offsets
           case _ => 
-            throw new IOException("Unrecognized version of the highwatermark checkpoint file: " + version)
+            throw new IllegalStateException("Unrecognized version of the highwatermark checkpoint file: " + version)
         }
       } finally {
-        reader.close()
+        if(reader != null)
+          CoreUtils.swallow(reader.close())
       }
     }
   }

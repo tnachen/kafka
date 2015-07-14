@@ -16,18 +16,18 @@
 */
 package kafka.server
 
-import kafka.log._
 import java.io.File
-import org.I0Itec.zkclient.ZkClient
-import org.apache.kafka.common.metrics.Metrics
-import org.easymock.EasyMock
-import org.junit._
-import org.junit.Assert._
-import kafka.common._
-import kafka.cluster.Replica
-import kafka.utils.{ZkUtils, SystemTime, KafkaScheduler, TestUtils, MockTime, CoreUtils}
 import java.util.concurrent.atomic.AtomicBoolean
+
+import kafka.cluster.Replica
+import kafka.common._
+import kafka.log._
+import kafka.utils.{CoreUtils, KafkaScheduler, MockTime, SystemTime, TestUtils, ZkUtils}
+import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.utils.{MockTime => JMockTime}
+import org.easymock.EasyMock
+import org.junit.Assert._
+import org.junit._
 
 class HighwatermarkPersistenceTest {
 
@@ -38,10 +38,10 @@ class HighwatermarkPersistenceTest {
       logDirs = config.logDirs.map(new File(_)).toArray,
       cleanerConfig = CleanerConfig())
   }
-    
+
   @After
   def teardown() {
-    for(manager <- logManagers; dir <- manager.logDirs)
+    for(manager <- logManagers; dir <- manager.getLogDirs)
       CoreUtils.rm(dir)
   }
 
@@ -50,7 +50,7 @@ class HighwatermarkPersistenceTest {
     // mock zkclient
     val zkUtils = EasyMock.createMock(classOf[ZkUtils])
     EasyMock.replay(zkUtils)
-    
+
     // create kafka scheduler
     val scheduler = new KafkaScheduler(2)
     scheduler.startup
@@ -156,5 +156,5 @@ class HighwatermarkPersistenceTest {
   def hwmFor(replicaManager: ReplicaManager, topic: String, partition: Int): Long = {
     replicaManager.highWatermarkCheckpoints(new File(replicaManager.config.logDirs(0)).getAbsolutePath).read.getOrElse(TopicAndPartition(topic, partition), 0L)
   }
-  
+
 }

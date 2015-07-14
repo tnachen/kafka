@@ -111,7 +111,9 @@ class ReplicaManager(val config: KafkaConfig,
   private val replicaStateChangeLock = new Object
   val replicaFetcherManager = new ReplicaFetcherManager(config, this, metrics, jTime, threadNamePrefix)
   private val highWatermarkCheckPointThreadStarted = new AtomicBoolean(false)
-  val highWatermarkCheckpoints = config.logDirs.map(dir => (new File(dir).getAbsolutePath, new OffsetCheckpoint(new File(dir, ReplicaManager.HighWatermarkFilename)))).toMap
+  @volatile var highWatermarkCheckpoints = config.logDirs.map(
+    dir => (new File(dir).getAbsolutePath, new OffsetCheckpoint(new File(
+      dir, ReplicaManager.HighWatermarkFilename)))).toMap
   private var hwThreadInitialized = false
   this.logIdent = "[Replica Manager on Broker " + localBrokerId + "]: "
   val stateChangeLogger = KafkaController.stateChangeLogger
@@ -123,6 +125,21 @@ class ReplicaManager(val config: KafkaConfig,
     purgatoryName = "Produce", config.brokerId, config.producerPurgatoryPurgeIntervalRequests)
   val delayedFetchPurgatory = new DelayedOperationPurgatory[DelayedFetch](
     purgatoryName = "Fetch", config.brokerId, config.fetchPurgatoryPurgeIntervalRequests)
+
+  private def createHighWatermarkCheckpoints(): Map[String, OffsetCheckpoint] = {
+    config.logDirs.map(
+      dir =>
+        try {
+          (new File(dir).getAbsolutePath, new OffsetCheckpoint(new File(dir, ReplicaManager.HighWatermarkFilename)))
+        } catch {
+          case e: IOException =>
+            throw new GenericKafkaStorageException(new File(dir), "Failed to create highwatermark chekpoint file in directory " +
+              dir, e)
+        }
+    ).toMap
+  }
+
+  val storageExceptionHandler = new GenericStorageExceptionHandler
 
   val leaderCount = newGauge(
     "LeaderCount",
@@ -144,11 +161,11 @@ class ReplicaManager(val config: KafkaConfig,
       def value = underReplicatedPartitionCount()
     }
   )
-  val isrExpandRate = newMeter("IsrExpandsPerSec",  "expands", TimeUnit.SECONDS)
-  val isrShrinkRate = newMeter("IsrShrinksPerSec",  "shrinks", TimeUnit.SECONDS)
+  val isrExpandRate = newMeter("IsrExpandsPerSec", "expands", TimeUnit.SECONDS)
+  val isrShrinkRate = newMeter("IsrShrinksPerSec", "shrinks", TimeUnit.SECONDS)
 
   def underReplicatedPartitionCount(): Int = {
-      getLeaderPartitions().count(_.isUnderReplicated)
+    getLeaderPartitions().count(_.isUnderReplicated)
   }
 
   def startHighWaterMarksCheckPointThread() = {
@@ -212,7 +229,7 @@ class ReplicaManager(val config: KafkaConfig,
     scheduler.schedule("isr-change-propagation", maybePropagateIsrChanges, period = 2500L, unit = TimeUnit.MILLISECONDS)
   }
 
-  def stopReplica(topic: String, partitionId: Int, deletePartition: Boolean): Short  = {
+  def stopReplica(topic: String, partitionId: Int, deletePartition: Boolean): Short = {
     stateChangeLogger.trace("Broker %d handling stop replica (delete=%s) for partition [%s,%d]".format(localBrokerId,
       deletePartition.toString, topic, partitionId))
     val errorCode = ErrorMapping.NoError
@@ -230,7 +247,7 @@ class ReplicaManager(val config: KafkaConfig,
           val topicAndPartition = TopicAndPartition(topic, partitionId)
 
           if(logManager.getLog(topicAndPartition).isDefined) {
-              logManager.deleteLog(topicAndPartition)
+            logManager.deleteLog(topicAndPartition)
           }
         }
         stateChangeLogger.trace("Broker %d ignoring stop replica (delete=%s) for partition [%s,%d] as replica doesn't exist on broker"
@@ -287,7 +304,7 @@ class ReplicaManager(val config: KafkaConfig,
       throw new ReplicaNotAvailableException("Replica %d is not available for partition [%s,%d]".format(config.brokerId, topic, partition))
   }
 
-  def getLeaderReplicaIfLocal(topic: String, partitionId: Int): Replica =  {
+  def getLeaderReplicaIfLocal(topic: String, partitionId: Int): Replica = {
     val partitionOpt = getPartition(topic, partitionId)
     partitionOpt match {
       case None =>
@@ -302,7 +319,7 @@ class ReplicaManager(val config: KafkaConfig,
     }
   }
 
-  def getReplica(topic: String, partitionId: Int, replicaId: Int = config.brokerId): Option[Replica] =  {
+  def getReplica(topic: String, partitionId: Int, replicaId: Int = config.brokerId): Option[Replica] = {
     val partitionOpt = getPartition(topic, partitionId)
     partitionOpt match {
       case None => None
@@ -424,10 +441,12 @@ class ReplicaManager(val config: KafkaConfig,
         } catch {
           // NOTE: Failed produce requests metric is not incremented for known exceptions
           // it is supposed to indicate un-expected failures of a broker in handling a produce request
-          case e: KafkaStorageException =>
-            fatal("Halting due to unrecoverable I/O error while handling produce request: ", e)
-            Runtime.getRuntime.halt(1)
-            (topicAndPartition, null)
+          case e: GenericKafkaStorageException =>
+            BrokerTopicStats.getBrokerTopicStats(topicAndPartition.topic).failedProduceRequestRate.mark()
+            BrokerTopicStats.getBrokerAllTopicsStats.failedProduceRequestRate.mark()
+            error("Error processing append operation on partition %s".format(topicAndPartition), e)
+            storageExceptionHandler(e)
+            (topicAndPartition, LogAppendResult(LogAppendInfo.UnknownLogAppendInfo, Some(e)))
           case utpe: UnknownTopicOrPartitionException =>
             (topicAndPartition, LogAppendResult(LogAppendInfo.UnknownLogAppendInfo, Some(utpe)))
           case nle: NotLeaderForPartitionException =>
@@ -436,7 +455,7 @@ class ReplicaManager(val config: KafkaConfig,
             (topicAndPartition, LogAppendResult(LogAppendInfo.UnknownLogAppendInfo, Some(mtle)))
           case mstle: MessageSetSizeTooLargeException =>
             (topicAndPartition, LogAppendResult(LogAppendInfo.UnknownLogAppendInfo, Some(mstle)))
-          case imse : InvalidMessageSizeException =>
+          case imse: InvalidMessageSizeException =>
             (topicAndPartition, LogAppendResult(LogAppendInfo.UnknownLogAppendInfo, Some(imse)))
           case t: Throwable =>
             BrokerTopicStats.getBrokerTopicStats(topicAndPartition.topic).failedProduceRequestRate.mark()
@@ -459,7 +478,7 @@ class ReplicaManager(val config: KafkaConfig,
                     responseCallback: Map[TopicAndPartition, FetchResponsePartitionData] => Unit) {
     val isFromFollower = replicaId >= 0
     val fetchOnlyFromLeader: Boolean = replicaId != Request.DebuggingConsumerId
-    val fetchOnlyCommitted: Boolean = ! Request.isValidBrokerId(replicaId)
+    val fetchOnlyCommitted: Boolean = !Request.isValidBrokerId(replicaId)
 
     // read from local logs
     val logReadResults = readFromLocalLog(fetchOnlyFromLeader, fetchOnlyCommitted, fetchInfo)
@@ -554,7 +573,7 @@ class ReplicaManager(val config: KafkaConfig,
             LogReadResult(FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty), -1L, fetchSize, false, Some(nle))
           case rnae: ReplicaNotAvailableException =>
             LogReadResult(FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty), -1L, fetchSize, false, Some(rnae))
-          case oor : OffsetOutOfRangeException =>
+          case oor: OffsetOutOfRangeException =>
             LogReadResult(FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MessageSet.Empty), -1L, fetchSize, false, Some(oor))
           case e: Throwable =>
             BrokerTopicStats.getBrokerTopicStats(topic).failedFetchRequestRate.mark()
@@ -875,8 +894,7 @@ class ReplicaManager(val config: KafkaConfig,
         highWatermarkCheckpoints(dir).write(hwms)
       } catch {
         case e: IOException =>
-          fatal("Error writing to highwatermark file: ", e)
-          Runtime.getRuntime().halt(1)
+          storageExceptionHandler(new GenericKafkaStorageException(new File(dir), "Failed to store highwatermark in dir " + dir, e))
       }
     }
   }
@@ -891,4 +909,75 @@ class ReplicaManager(val config: KafkaConfig,
       checkpointHighWatermarks()
     info("Shut down completely")
   }
+
+
+  class GenericStorageExceptionHandler extends (GenericKafkaStorageException => Unit) with Logging {
+    this.logIdent = "[GenericStorageExceptionHandler on Broker " + localBrokerId + "]: "
+
+    override def apply(ex: GenericKafkaStorageException): Unit = {
+      debug("Received generic storage exception to handle: " + ex)
+      replicaStateChangeLock synchronized {
+        if(logManager.getLogDirs.contains(ex.dirOrFile)) {
+          offlineDisk(ex.dirOrFile)
+        } else {
+          val logOption = logManager.allLogs().find(l => l.dir == ex.dirOrFile)
+          logOption match {
+            case Some(log) =>
+              offlineDisk(log.dir.getParentFile)
+            case None =>
+              warn("File " + ex.dirOrFile + " is neither disk nor log directory")
+          }
+        }
+      }
+    }
+
+    /**
+     * To offline the disk:
+     * 1. Stop updating highWatermark checkpoints
+     * 2. Update config.logDirs so new partitions are not created there
+     * 3. Request LogManager to offline the disk - stop all IO operations on it and remove disk and underlying
+     * partitions from the pool of managed directories and logs
+     * 4. Restart partitions that were stored under unavailable disk - notify controller through a zk path
+     */
+    private def offlineDisk(disk: File): Unit = {
+      warn("Entire directory " + disk + " is not available. Putting directory to offline, restarting underlying partitions.")
+
+      removeOfflineHighWaterMarkCheckPoints(Seq(disk.getAbsolutePath))
+
+      val affectedPartitions = logManager.logsByDir(disk.getAbsolutePath).keySet
+      debug("Affected partitions: " + affectedPartitions + " will be restarted")
+
+      config.logDirs = logManager.getLogDirs.filterNot(_ == disk).map(_.getAbsolutePath)
+      trace("Config log dirs was changed to " + config.logDirs)
+
+      logManager.offlineDisk(disk)
+      replicaFetcherManager.removeFetcherForPartitions(affectedPartitions)
+      for (topicAndPartition <- affectedPartitions) {
+        stopReplica(topicAndPartition.topic, topicAndPartition.partition, deletePartition = true)
+      }
+
+      if (logManager.getLogDirs.isEmpty) {
+        fatal("The last available disk was put to offline")
+        Runtime.getRuntime.halt(1)
+      }
+
+      requestPartitionsRestart(affectedPartitions)
+    }
+
+    private def requestPartitionsRestart(taps: Set[TopicAndPartition]): Unit = {
+      trace("Requesting partitions restart for " + taps)
+
+      val partitions = taps.map(tap => Map("topic" -> tap.topic, "partition" -> tap.partition))
+      val data = Json.encode(Map("version" -> 1, "broker" -> localBrokerId, "partitions" -> partitions))
+      zkUtils.createSequentialPersistentPath(ZkUtils.RestartPartitionsPath + "/" + ZkUtils.RestartPartitionsZnodePrefix, data)
+    }
+
+    private def removeOfflineHighWaterMarkCheckPoints(dirs: Seq[String]): Unit = {
+      trace("Removing highWatermark checkpoints for offline directories: " + dirs)
+      replicaStateChangeLock synchronized {
+        highWatermarkCheckpoints = highWatermarkCheckpoints.filterNot { case (dir, _) => dirs.contains(dir)}
+      }
+    }
+  }
+
 }

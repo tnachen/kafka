@@ -21,6 +21,7 @@ import java.net.SocketTimeoutException
 
 import kafka.admin.AdminUtils
 import kafka.cluster.BrokerEndPoint
+import kafka.common.{GenericKafkaStorageException, TopicAndPartition}
 import kafka.log.LogConfig
 import kafka.message.ByteBufferMessageSet
 import kafka.api.KAFKA_090
@@ -124,9 +125,8 @@ class ReplicaFetcherThread(name: String,
         trace("Follower %d set replica high watermark for partition [%s,%d] to %s"
           .format(replica.brokerId, topic, partitionId, followerHighWatermark))
     } catch {
-      case e: KafkaStorageException =>
-        fatal("Disk error while replicating data.", e)
-        Runtime.getRuntime.halt(1)
+      case e: GenericKafkaStorageException =>
+        replicaMgr.storageExceptionHandler(e)
     }
   }
 

@@ -92,7 +92,13 @@ class Partition(val topic: String,
                                            AdminUtils.fetchEntityConfig(zkUtils, ConfigType.Topic, topic))
           val log = logManager.createLog(TopicAndPartition(topic, partitionId), config)
           val checkpoint = replicaManager.highWatermarkCheckpoints(log.dir.getParentFile.getAbsolutePath)
-          val offsetMap = checkpoint.read
+          val offsetMap =
+          try {
+            checkpoint.read
+          } catch {
+            case e: IOException => throw new GenericKafkaStorageException(
+              log.dir.getParentFile, "Failed to read highwatermark for replica " + replicaId, e)
+          }
           if (!offsetMap.contains(TopicAndPartition(topic, partitionId)))
             info("No checkpointed highwatermark is found for partition [%s,%d]".format(topic, partitionId))
           val offset = offsetMap.getOrElse(TopicAndPartition(topic, partitionId), 0L).min(log.logEndOffset)
@@ -143,14 +149,8 @@ class Partition(val topic: String,
       assignedReplicaMap.clear()
       inSyncReplicas = Set.empty[Replica]
       leaderReplicaIdOpt = None
-      try {
-        logManager.deleteLog(TopicAndPartition(topic, partitionId))
-        removePartitionMetrics()
-      } catch {
-        case e: IOException =>
-          fatal("Error deleting the log for partition [%s,%d]".format(topic, partitionId), e)
-          Runtime.getRuntime().halt(1)
-      }
+      logManager.deleteLog(TopicAndPartition(topic, partitionId))
+      removePartitionMetrics()
     }
   }
 

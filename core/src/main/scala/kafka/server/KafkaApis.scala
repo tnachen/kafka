@@ -142,9 +142,8 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       requestChannel.sendResponse(new Response(request, new ResponseSend(request.connectionId, responseHeader, leaderAndIsrResponse)))
     } catch {
-      case e: KafkaStorageException =>
-        fatal("Disk error during leadership change.", e)
-        Runtime.getRuntime.halt(1)
+      case e: GenericKafkaStorageException =>
+        replicaManager.storageExceptionHandler(e)
     }
   }
 

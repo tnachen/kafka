@@ -18,23 +18,17 @@
 package kafka.utils
 
 import java.io._
-import java.nio._
-import charset.Charset
-import java.nio.channels._
-import java.util.concurrent.locks.{ReadWriteLock, Lock}
 import java.lang.management._
+import java.nio._
+import java.nio.channels._
+import java.util.concurrent.locks.{Lock, ReadWriteLock}
 import javax.management._
 
-import org.apache.kafka.common.protocol.SecurityProtocol
-
-import scala.collection._
-import scala.collection.mutable
-import java.util.Properties
 import kafka.cluster.EndPoint
-import kafka.common.KafkaException
-import kafka.common.KafkaStorageException
-import org.apache.kafka.common.utils.Crc32
-import org.apache.kafka.common.utils.Utils
+import org.apache.kafka.common.protocol.SecurityProtocol
+import org.apache.kafka.common.utils.{Crc32, Utils}
+
+import scala.collection.{mutable, _}
 
 
 /**

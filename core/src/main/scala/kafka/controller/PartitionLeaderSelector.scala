@@ -200,6 +200,85 @@ class ControlledShutdownLeaderSelector(controllerContext: ControllerContext)
 }
 
 /**
+ * Select the new leader, new isr and receiving replicas (for the LeaderAndIsrRequest) for the partition
+ * that needs to be restarted in some broker - restarting broker. It is assumed that restarting broker does NOT
+ * belong to any "alive" broker set:
+ * 1. If at least one broker from the isr is alive, it picks a broker from the live isr as the new leader and the live
+ * isr as the new isr.
+ * 2. Else, if unclean leader election for the topic is disabled, it throws a NoReplicaOnlineException.
+ * 3. Else, it picks some alive broker from the assigned replica list as the new leader and the new isr.
+ * 4. If no broker in the assigned replica list is alive, it throws a NoReplicaOnlineException
+ * Assigned replicas remain the same - it includes restarting broker (unless some broker went down)
+ * Once the leader is successfully registered in zookeeper, it updates the allLeaders cache
+ */
+class RestartedPartitionLeaderSelector(controllerContext: ControllerContext, config: KafkaConfig, partitionsToBeRestarted: Map[TopicAndPartition, Seq[Int]])
+  extends PartitionLeaderSelector with Logging {
+  this.logIdent = "[RestartedPartitionLeaderSelector]: "
+
+  def selectLeader(topicAndPartition: TopicAndPartition, currentLeaderAndIsr: LeaderAndIsr): (LeaderAndIsr, Seq[Int]) = {
+    val restartingBrokers = partitionsToBeRestarted(topicAndPartition)
+
+    controllerContext.partitionReplicaAssignment.get(topicAndPartition) match {
+      case Some(assignedReplicas) =>
+        def isBrokerAlive(brokerId: Int): Boolean = controllerContext.liveBrokerIds.contains(brokerId)
+        def isRestartingBroker(brokerId: Int): Boolean = restartingBrokers.contains(brokerId)
+
+        val liveAssignedReplicas = assignedReplicas.filter(b => isBrokerAlive(b) && !isRestartingBroker(b))
+        val liveBrokersInIsr = currentLeaderAndIsr.isr.filter(b => isBrokerAlive(b) && !isRestartingBroker(b))
+        val currentLeaderEpoch = currentLeaderAndIsr.leaderEpoch
+        val currentLeaderIsrZkPathVersion = currentLeaderAndIsr.zkVersion
+
+        val newLeaderAndIsr =
+
+          liveBrokersInIsr.isEmpty match {
+            case true =>
+              // Prior to electing an unclean (i.e. non-ISR) leader, ensure that doing so is not disallowed by the configuration
+              // for unclean leader election.
+              if (!LogConfig.fromProps(config.originals(), AdminUtils.fetchEntityConfig(controllerContext.zkUtils, ConfigType.Topic, 
+                topicAndPartition.topic)).uncleanLeaderElectionEnable) {
+                throw new NoReplicaOnlineException(("No broker in ISR for partition " +
+                  "%s is alive. Live brokers are: [%s],".format(topicAndPartition, controllerContext.liveBrokerIds)) +
+                  " ISR brokers are: [%s]".format(currentLeaderAndIsr.isr.mkString(",")))
+              }
+
+              debug("No broker in ISR is alive for %s. Pick the leader from the alive assigned replicas: %s"
+                .format(topicAndPartition, liveAssignedReplicas.mkString(",")))
+              liveAssignedReplicas.isEmpty match {
+                case true =>
+                  throw new NoReplicaOnlineException(("No replica for partition " +
+                    "%s is alive. Live brokers are: [%s],".format(topicAndPartition, controllerContext.liveBrokerIds)) +
+                    " Assigned replicas are: [%s]".format(assignedReplicas))
+                case false =>
+                  ControllerStats.uncleanLeaderElectionRate.mark()
+                  val newLeader = liveAssignedReplicas.head
+                  warn("No broker in ISR is alive for %s. Elect leader %d from live brokers %s. There's potential data loss."
+                    .format(topicAndPartition, newLeader, liveAssignedReplicas.mkString(",")))
+                  new LeaderAndIsr(newLeader, currentLeaderEpoch + 1, List(newLeader), currentLeaderIsrZkPathVersion + 1)
+              }
+            case false =>
+              val currentLeader = currentLeaderAndIsr.leader
+              val newLeader = if (isBrokerAlive(currentLeader) && !isRestartingBroker(currentLeader)) {
+                // current leader is alive and didn't initiate partition restart - should be fine to continue leading partition
+                currentLeader
+              } else {
+                // current leader is either dead or lost partition - new leader is elected as preferred replica
+                liveAssignedReplicas.filter(r => liveBrokersInIsr.contains(r)).head
+              }
+              debug("Some broker in ISR is alive for %s. Select %d from ISR %s to be the leader."
+                .format(topicAndPartition, newLeader, liveBrokersInIsr.mkString(",")))
+              new LeaderAndIsr(newLeader, currentLeaderEpoch + 1, liveBrokersInIsr.toList, currentLeaderIsrZkPathVersion + 1)
+          }
+
+        info("Selected new leader and ISR %s for restarting partition %s".format(newLeaderAndIsr.toString(), topicAndPartition))
+        // to restart the partition on a particular broker it needs to stay in AR list
+        (newLeaderAndIsr, assignedReplicas.filter(isBrokerAlive))
+      case None =>
+        throw new NoReplicaOnlineException("Partition %s doesn't have replicas assigned to it".format(topicAndPartition))
+    }
+  }
+}
+
+/**
  * Essentially does nothing. Returns the current leader and ISR, and the current
  * set of replicas assigned to a given topic/partition.
  */

@@ -17,41 +17,27 @@
 
 package kafka.utils
 
-import java.io.File
-import java.net.URI
-import java.security.URIParameter
-import javax.security.auth.login.Configuration
 import java.util.concurrent.CountDownLatch
 
+import kafka.admin._
+import kafka.api.LeaderAndIsr
 import kafka.cluster._
+import kafka.common.{KafkaException, NoEpochForPartitionException, TopicAndPartition}
 import kafka.consumer.{ConsumerThreadId, TopicCount}
+import kafka.controller.{KafkaController, LeaderIsrAndControllerEpoch, ReassignedPartitionsContext}
 import kafka.server.ConfigType
-import org.I0Itec.zkclient.{ZkClient,ZkConnection}
-import org.I0Itec.zkclient.exception.{ZkException, ZkNodeExistsException, ZkNoNodeException,
-  ZkMarshallingError, ZkBadVersionException}
+import kafka.utils.ZkUtils._
+import org.I0Itec.zkclient.exception.{ZkBadVersionException, ZkException, ZkMarshallingError, ZkNoNodeException, ZkNodeExistsException}
 import org.I0Itec.zkclient.serialize.ZkSerializer
+import org.I0Itec.zkclient.{ZkClient, ZkConnection}
 import org.apache.kafka.common.config.ConfigException
 import org.apache.kafka.common.protocol.SecurityProtocol
-
-import org.apache.zookeeper.ZooDefs
-import scala.collection.JavaConverters._
-import scala.collection._
-import kafka.api.LeaderAndIsr
-import org.apache.zookeeper.data.{ACL, Stat}
-import kafka.admin._
-import kafka.common.{KafkaException, NoEpochForPartitionException}
-import kafka.controller.ReassignedPartitionsContext
-import kafka.controller.KafkaController
-import kafka.controller.LeaderIsrAndControllerEpoch
-import kafka.common.TopicAndPartition
-import kafka.utils.ZkUtils._
-
-import org.apache.zookeeper.AsyncCallback.{DataCallback,StringCallback}
-import org.apache.zookeeper.CreateMode
-import org.apache.zookeeper.KeeperException
+import org.apache.zookeeper.AsyncCallback.{DataCallback, StringCallback}
 import org.apache.zookeeper.KeeperException.Code
-import org.apache.zookeeper.ZooDefs.Ids
-import org.apache.zookeeper.ZooKeeper
+import org.apache.zookeeper.{CreateMode, KeeperException, ZooDefs, ZooKeeper}
+import org.apache.zookeeper.data.{ACL, Stat}
+
+import scala.collection._
 
 object ZkUtils {
   val ConsumersPath = "/consumers"
@@ -64,14 +50,16 @@ object ZkUtils {
   val PreferredReplicaLeaderElectionPath = "/admin/preferred_replica_election"
   val BrokerSequenceIdPath = "/brokers/seqid"
   val IsrChangeNotificationPath = "/isr_change_notification"
+  val RestartPartitionsPath = "/restart_partitions"
+  val RestartPartitionsZnodePrefix = "restart_request"
   val EntityConfigPath = "/config"
   val EntityConfigChangesPath = "/config/changes"
-  
+
   def apply(zkUrl: String, sessionTimeout: Int, connectionTimeout: Int, isZkSecurityEnabled: Boolean): ZkUtils = {
     val (zkClient, zkConnection) = createZkClientAndConnection(zkUrl, sessionTimeout, connectionTimeout)
     new ZkUtils(zkClient, zkConnection, isZkSecurityEnabled)
   }
-  
+
   /*
    * Used in tests
    */
@@ -89,7 +77,7 @@ object ZkUtils {
     val zkClient = new ZkClient(zkConnection, connectionTimeout, ZKStringSerializer)
     (zkClient, zkConnection)
   }
-  
+
   def DefaultAcls(isSecure: Boolean): java.util.List[ACL] = if (isSecure) {
     val list = new java.util.ArrayList[ACL]
     list.addAll(ZooDefs.Ids.CREATOR_ALL_ACL)
@@ -98,7 +86,7 @@ object ZkUtils {
   } else {
     ZooDefs.Ids.OPEN_ACL_UNSAFE
   }
-   
+
   def maybeDeletePath(zkUrl: String, dir: String) {
     try {
       val zk = createZkClient(zkUrl, 30*1000, 30*1000)
@@ -108,7 +96,7 @@ object ZkUtils {
       case _: Throwable => // swallow
     }
   }
-  
+
   /*
    * Get calls that only depend on static paths
    */
@@ -125,7 +113,7 @@ object ZkUtils {
 
   def getTopicPartitionLeaderAndIsrPath(topic: String, partitionId: Int): String =
     getTopicPartitionPath(topic, partitionId) + "/" + "state"
-    
+
   def getEntityConfigRootPath(entityType: String): String =
     ZkUtils.EntityConfigPath + "/" + entityType
 
@@ -136,7 +124,7 @@ object ZkUtils {
     DeleteTopicsPath + "/" + topic
 }
 
-class ZkUtils(val zkClient: ZkClient, 
+class ZkUtils(val zkClient: ZkClient,
               val zkConnection: ZkConnection,
               val isSecure: Boolean) extends Logging {
   // These are persistent ZK paths that should exist on kafka broker startup.
@@ -160,7 +148,7 @@ class ZkUtils(val zkClient: ZkClient,
                                     IsrChangeNotificationPath)
 
   val DefaultAcls: java.util.List[ACL] = ZkUtils.DefaultAcls(isSecure)
-  
+
   def getController(): Int = {
     readDataMaybeNull(ControllerPath)._1 match {
       case Some(controller) => KafkaController.parseControllerId(controller)
@@ -267,10 +255,8 @@ class ZkUtils(val zkClient: ZkClient,
   /**
    * Register brokers with v2 json format (which includes multiple endpoints).
    * This format also includes default endpoints for compatibility with older clients.
-   * @param zkClient
    * @param id
    * @param advertisedEndpoints
-   * @param timeout
    * @param jmxPort
    */
   def registerBrokerInZk(id: Int, host: String, port: Int, advertisedEndpoints: immutable.Map[SecurityProtocol, EndPoint], jmxPort: Int) {
@@ -644,6 +630,42 @@ class ZkUtils(val zkClient: ZkClient,
     }
   }
 
+  def getPartitionsBeingRestarted(): Map[String, Map[TopicAndPartition, Seq[Int]]] = {
+    import scala.collection.JavaConverters._
+    val restartPaths = zkClient.getChildren(RestartPartitionsPath).asScala
+    restartPaths.map {
+      restartChildPath =>
+        val fullChildPath = (RestartPartitionsPath + "/" + restartChildPath).trim
+        val jsonOpt = readDataMaybeNull(fullChildPath)._1
+        (fullChildPath, jsonOpt match {
+          case Some(json) =>
+            parseRestartPartitions(json).mapValues(Seq(_))
+          case None =>
+            Map.empty[TopicAndPartition, Seq[Int]]
+        })
+    }.toMap
+  }
+
+  def parseRestartPartitions(jsonData: String): Map[TopicAndPartition, Int] = {
+    Json.parseFull(jsonData) match {
+      case Some(m) =>
+        val data = m.asInstanceOf[Map[String, Any]]
+        val broker = data("broker").asInstanceOf[Int]
+        data.get("partitions") match {
+          case Some(partitionsSeq) =>
+            partitionsSeq.asInstanceOf[Seq[Map[String, Any]]].map(p => {
+              val topic = p.get("topic").get.asInstanceOf[String]
+              val partition = p.get("partition").get.asInstanceOf[Int]
+              TopicAndPartition(topic, partition) -> broker
+            }).toMap
+          case None =>
+            Map.empty
+        }
+      case None =>
+        Map.empty
+    }
+  }
+
   // Parses without deduplicating keys so the the data can be checked before allowing reassignment to proceed
   def parsePartitionReassignmentDataWithoutDedup(jsonData: String): Seq[(TopicAndPartition, Seq[Int])] = {
     Json.parseFull(jsonData) match {
@@ -755,7 +777,6 @@ class ZkUtils(val zkClient: ZkClient,
    * This API takes in a broker id, queries zookeeper for the broker metadata and returns the metadata for that broker
    * or throws an exception if the broker dies before the query to zookeeper finishes
    * @param brokerId The broker id
-   * @param zkClient The zookeeper client connection
    * @return An optional Broker object encapsulating the broker metadata
    */
   def getBrokerInfo(brokerId: Int): Option[Broker] = {
@@ -778,7 +799,6 @@ class ZkUtils(val zkClient: ZkClient,
       case e: ZkNoNodeException => {
         createParentPath(BrokerSequenceIdPath, acls)
         try {
-          import scala.collection.JavaConversions._
           zkClient.createPersistent(BrokerSequenceIdPath, "", acls)
           0
         } catch {
@@ -838,7 +858,7 @@ class ZkUtils(val zkClient: ZkClient,
       }
     }
   }
-  
+
   def close() {
     if(zkClient != null) {
       zkClient.close()
@@ -890,7 +910,6 @@ class ZKConfig(props: VerifiableProperties) {
 
 object ZkPath {
   @volatile private var isNamespacePresent: Boolean = false
-  import scala.collection.JavaConversions._
 
   def checkNamespace(client: ZkClient) {
     if(isNamespacePresent)
@@ -933,7 +952,7 @@ object ZkPath {
  * znode is created and the create call returns OK. If
  * the call receives a node exists event, then it checks
  * if the session matches. If it does, then it returns OK,
- * and otherwise it fails the operation.  
+ * and otherwise it fails the operation.
  */
 
 class ZKCheckedEphemeral(path: String,
@@ -944,7 +963,7 @@ class ZKCheckedEphemeral(path: String,
   private val getDataCallback = new GetDataCallback
   val latch: CountDownLatch = new CountDownLatch(1)
   var result: Code = Code.OK
-  
+
   private class CreateCallback extends StringCallback {
     def processResult(rc: Int,
                       path: String,
@@ -1001,7 +1020,7 @@ class ZKCheckedEphemeral(path: String,
         }
       }
   }
-  
+
   private def createEphemeral() {
     zkHandle.create(path,
                     ZKStringSerializer.serialize(data),
@@ -1010,7 +1029,7 @@ class ZKCheckedEphemeral(path: String,
                     createCallback,
                     null)
   }
-  
+
   private def createRecursive(prefix: String, suffix: String) {
     debug("Path: %s, Prefix: %s, Suffix: %s".format(path, prefix, suffix))
     if(suffix.isEmpty()) {

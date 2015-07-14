@@ -16,13 +16,13 @@
  */
 package kafka.log
 
+import java.io.{File, IOException}
+
 import kafka.message._
-import kafka.common._
+import kafka.server.{FetchDataInfo, LogOffsetMetadata}
 import kafka.utils._
-import kafka.server.{LogOffsetMetadata, FetchDataInfo}
 
 import scala.math._
-import java.io.File
 
 
  /**
@@ -257,10 +257,10 @@ class LogSegment(val log: FileMessageSet,
   def changeFileSuffixes(oldSuffix: String, newSuffix: String) {
     val logRenamed = log.renameTo(new File(CoreUtils.replaceSuffix(log.file.getPath, oldSuffix, newSuffix)))
     if(!logRenamed)
-      throw new KafkaStorageException("Failed to change the log file suffix from %s to %s for log segment %d".format(oldSuffix, newSuffix, baseOffset))
+      throw new IOException("Failed to change the log file suffix from %s to %s for log segment %d".format(oldSuffix, newSuffix, baseOffset))
     val indexRenamed = index.renameTo(new File(CoreUtils.replaceSuffix(index.file.getPath, oldSuffix, newSuffix)))
     if(!indexRenamed)
-      throw new KafkaStorageException("Failed to change the index file suffix from %s to %s for log segment %d".format(oldSuffix, newSuffix, baseOffset))
+      throw new IOException("Failed to change the index file suffix from %s to %s for log segment %d".format(oldSuffix, newSuffix, baseOffset))
   }
   
   /**
@@ -273,15 +273,15 @@ class LogSegment(val log: FileMessageSet,
   
   /**
    * Delete this log segment from the filesystem.
-   * @throws KafkaStorageException if the delete fails.
+   * @throws IOException if the delete fails.
    */
   def delete() {
     val deletedLog = log.delete()
     val deletedIndex = index.delete()
     if(!deletedLog && log.file.exists)
-      throw new KafkaStorageException("Delete of log " + log.file.getName + " failed.")
+      throw new IOException("Delete of log " + log.file.getName + " failed.")
     if(!deletedIndex && index.file.exists)
-      throw new KafkaStorageException("Delete of index " + index.file.getName + " failed.")
+      throw new IOException("Delete of index " + index.file.getName + " failed.")
   }
   
   /**
